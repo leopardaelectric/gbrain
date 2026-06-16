@@ -24,8 +24,10 @@
  *    the FS walk into one array, then run ONE SELECT against pages with a
  *    VALUES clause. NOT a per-file loop (which would be 20K round trips on
  *    a 10K-file source).
- *  - Time + size bounds: cap the walk at 10K files OR 5s. Bail with a "check
- *    skipped, walk too large" status instead of letting doctor hang.
+ *  - Time + size bounds: cap the walk at 50K files OR 60s by default. Bail
+ *    with a "check skipped, walk too large" status instead of letting doctor
+ *    hang. Operators can still lower/raise via GBRAIN_DRIFT_LIMIT and
+ *    GBRAIN_DRIFT_TIMEOUT_MS.
  *  - Wrapper try/catch around the walk per OV13: ENOENT/EACCES on local_path
  *    yields zero files, NOT a thrown crash that takes down the whole doctor
  *    run.
@@ -55,9 +57,25 @@ export interface MisroutedResult {
   sample: MisroutedSample[];
 }
 
-const DEFAULT_FILE_LIMIT = 10_000;
-const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_FILE_LIMIT = 50_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 const SAMPLE_LIMIT = 5;
+
+function parsePositiveInt(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export function resolveDriftWalkOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): {
+  limit: number;
+  timeoutMs: number;
+} {
+  return {
+    limit: parsePositiveInt(env.GBRAIN_DRIFT_LIMIT) ?? DEFAULT_FILE_LIMIT,
+    timeoutMs: parsePositiveInt(env.GBRAIN_DRIFT_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS,
+  };
+}
 
 /**
  * Walk a directory tree for `.md` + `.mdx` files. Skips dotfiles (`.git`),

@@ -4,6 +4,8 @@ import { withRetry, BULK_RETRY_OPTS, RetryAbortError } from './retry.ts';
 
 /** Max paths per append-INSERT round-trip; bounds the param-array size. */
 const APPEND_CHUNK = 1000;
+/** Above this, REPLACE stores keys in op_checkpoint_paths instead of JSONB. */
+const REPLACE_CHILD_ROW_THRESHOLD = 100;
 
 /**
  * Single writable-CTE statement (one round-trip): ensure the parent
@@ -21,6 +23,21 @@ const APPEND_PATHS_SQL = `WITH parent AS (
 INSERT INTO op_checkpoint_paths (op, fingerprint, path)
 SELECT $1, $2, unnest($3::text[])
 ON CONFLICT (op, fingerprint, path) DO NOTHING`;
+
+const RESET_CHECKPOINT_SQL = `WITH parent AS (
+  INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
+  VALUES ($1, $2, '[]'::jsonb, now())
+  ON CONFLICT (op, fingerprint) DO UPDATE
+    SET completed_keys = '[]'::jsonb,
+        updated_at = now()
+  RETURNING 1
+),
+deleted AS (
+  DELETE FROM op_checkpoint_paths
+  WHERE op = $1 AND fingerprint = $2
+  RETURNING 1
+)
+SELECT 1`;
 
 /**
  * v0.42.x (#1794): every checkpoint write routes through the DIRECT session
@@ -126,8 +143,20 @@ export async function loadOpCheckpoint(
       `SELECT path AS ckey FROM op_checkpoint_paths
          WHERE op = $1 AND fingerprint = $2
        UNION ALL
-       SELECT jsonb_array_elements_text(completed_keys) AS ckey FROM op_checkpoints
-         WHERE op = $1 AND fingerprint = $2`,
+      SELECT jsonb_array_elements_text(
+                CASE jsonb_typeof(completed_keys)
+                  WHEN 'array' THEN completed_keys
+                  WHEN 'string' THEN
+                    CASE
+                      WHEN octet_length(completed_keys::text) <= 1000000
+                      THEN jsonb_build_array(completed_keys)
+                      ELSE '[]'::jsonb
+                    END
+                  ELSE '[]'::jsonb
+                END
+              ) AS ckey
+         FROM op_checkpoints
+        WHERE op = $1 AND fingerprint = $2`,
       [key.op, key.fingerprint],
     );
     const set = new Set<string>();
@@ -157,14 +186,27 @@ export async function recordCompleted(
   // REPLACE semantics (kept deliberately — #1794 V3). Callers like
   // extract-conversation-facts serialize a MUTABLE map through here and rely on
   // stale keys being REMOVED; an append would make them unremovable. The full
-  // set lands in the parent `completed_keys` JSONB column via a single UPSERT —
-  // exactly as before. JSON.stringify into `$3::jsonb` is correct (the text→jsonb
-  // cast yields a proper array; NOT the double-encode trap, which is the template
-  // form). Sync uses `appendCompleted` (below) instead, never this.
+  // set usually lands in the parent `completed_keys` JSONB column via a single
+  // UPSERT. For large sets, store rows in op_checkpoint_paths instead; postgres
+  // rejects very large JSONB string parameters before they even reach the cast.
+  // Sync uses `appendCompleted` (below) for additive deltas; this function keeps
+  // REPLACE semantics by clearing child rows first in both paths.
   const sorted = [...keys].sort();
+  if (sorted.length > REPLACE_CHILD_ROW_THRESHOLD) {
+    const reset = await durableWrite(engine, key, 'reset', () =>
+      engine.executeRawDirect(RESET_CHECKPOINT_SQL, [key.op, key.fingerprint]));
+    if (!reset) return false;
+    return appendCompleted(engine, key, sorted);
+  }
+
   return durableWrite(engine, key, 'write', () =>
     engine.executeRawDirect(
-      `INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
+      `WITH deleted AS (
+         DELETE FROM op_checkpoint_paths
+         WHERE op = $1 AND fingerprint = $2
+         RETURNING 1
+       )
+       INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
        VALUES ($1, $2, $3::jsonb, now())
        ON CONFLICT (op, fingerprint) DO UPDATE
          SET completed_keys = EXCLUDED.completed_keys,

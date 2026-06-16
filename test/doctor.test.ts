@@ -44,6 +44,72 @@ describe('doctor command', () => {
     expect(check.issues![0].action).toContain('trigger');
   });
 
+  test('content_sanity_audit_recent is ok for warn-only oversize audit noise', async () => {
+    const { classifyContentSanityAuditStatus } = await import('../src/commands/doctor.ts');
+    expect(
+      classifyContentSanityAuditStatus({
+        by_type: {
+          hard_block: 0,
+          quarantine: 0,
+          reject: 0,
+          flag: 0,
+          soft_block: 0,
+          warn: 106,
+        },
+      }),
+    ).toBe('ok');
+    expect(
+      classifyContentSanityAuditStatus({
+        by_type: {
+          hard_block: 0,
+          quarantine: 0,
+          reject: 0,
+          flag: 1,
+          soft_block: 0,
+          warn: 0,
+        },
+      }),
+    ).toBe('warn');
+    expect(
+      classifyContentSanityAuditStatus({
+        by_type: {
+          hard_block: 1,
+          quarantine: 0,
+          reject: 0,
+          flag: 0,
+          soft_block: 0,
+          warn: 0,
+        },
+      }),
+    ).toBe('fail');
+  });
+
+  test('subagent_capability accepts gateway loop with non-Anthropic chat model', async () => {
+    const { checkSubagentCapability } = await import('../src/commands/doctor.ts');
+    const engine = {
+      getConfig: async (key: string) => {
+        if (key === 'agent.use_gateway_loop') return 'true';
+        if (key === 'models.tier.subagent') return null;
+        if (key === 'models.default') return null;
+        return null;
+      },
+    } as any;
+    const originalChat = process.env.GBRAIN_CHAT_MODEL;
+    const originalAnthropic = process.env.ANTHROPIC_API_KEY;
+    try {
+      process.env.GBRAIN_CHAT_MODEL = 'openai:gpt-5.2';
+      delete process.env.ANTHROPIC_API_KEY;
+      const result = await checkSubagentCapability(engine);
+      expect(result.status).toBe('ok');
+      expect(result.message).toContain('agent.use_gateway_loop=true');
+    } finally {
+      if (originalChat === undefined) delete process.env.GBRAIN_CHAT_MODEL;
+      else process.env.GBRAIN_CHAT_MODEL = originalChat;
+      if (originalAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = originalAnthropic;
+    }
+  });
+
   test('runDoctor accepts null engine for filesystem-only mode', async () => {
     const { runDoctor } = await import('../src/commands/doctor.ts');
     // runDoctor should accept null engine — it runs filesystem checks only.
@@ -121,6 +187,8 @@ describe('doctor command', () => {
     expect(block).toContain('facts.absorb_warn_threshold');
     // 24h window
     expect(block).toMatch(/INTERVAL\s+'24\s*hours?'/i);
+    // Abort/cancel teardown noise is excluded from the health rollup.
+    expect(block).toMatch(/!~\*\s*'\(aborted\|cancelled\)'/);
     // Pre-v47 fallback (column missing) reports skipped not warn
     expect(block).toContain("Skipped (ingest_log.source_id unavailable");
     // RLS deny gives a useful message
@@ -1115,6 +1183,29 @@ describe('v0.40.4 — graph_signals_coverage check', () => {
     expect(check.status).toBe('ok');
     expect(check.message).toContain('40.0%');
     expect(check.message).toContain('fire on most queries');
+  });
+
+  test('structural pages do not dilute graph_signals coverage', async () => {
+    for (let i = 0; i < 10; i++) {
+      await engine.putPage(`page/${i}`, { type: 'note', title: `page-${i}`, compiled_truth: 'body' });
+    }
+    for (let i = 0; i < 500; i++) {
+      await engine.putPage(`default/shared/slack-conversations/thread-${i}`, {
+        type: 'note',
+        title: `Thread ${i}`,
+        compiled_truth: 'archive',
+      });
+    }
+    await engine.addLinksBatch([
+      { from_slug: 'page/0', to_slug: 'page/1', link_type: 'mentions' },
+      { from_slug: 'page/0', to_slug: 'page/2', link_type: 'mentions' },
+      { from_slug: 'page/0', to_slug: 'page/3', link_type: 'mentions' },
+      { from_slug: 'page/0', to_slug: 'page/4', link_type: 'mentions' },
+    ]);
+    const check = await checkGraphSignalsCoverage(engine);
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('40.0%');
+    expect(check.message).toContain('linkable pages');
   });
 
   test('graph_signals enabled + 10-29% coverage → ok with occasional-fire note', async () => {

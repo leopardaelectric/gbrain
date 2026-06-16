@@ -31,9 +31,18 @@
  */
 
 import type { BrainEngine, SourceRow } from '../core/engine.ts';
+import { ALL_PHASES } from '../core/cycle.ts';
 import type { MinionQueue } from '../core/minions/queue.ts';
 
 const FULL_CYCLE_FLOOR_MIN = 60;
+
+/**
+ * Autopilot runs the canonical maintenance sweep. Expensive opt-in phases
+ * self-gate internally (for example conversation_facts_backfill checks
+ * cycle.conversation_facts_backfill.enabled and its own cost/walltime caps),
+ * so omitting them here creates silent doctor backlogs.
+ */
+export const AUTOPILOT_PHASES = ALL_PHASES;
 
 export interface FanoutOpts {
   repoPath: string;
@@ -179,7 +188,7 @@ export async function dispatchPerSource(
     // (default source) and pre-v0.18 brains without the sources table.
     const job = await queue.add(
       'autopilot-cycle',
-      { repoPath: opts.repoPath },
+      { repoPath: opts.repoPath, phases: AUTOPILOT_PHASES },
       {
         queue: 'default',
         idempotency_key: `autopilot-cycle:${opts.slot}`,
@@ -208,6 +217,7 @@ export async function dispatchPerSource(
           repoPath: opts.repoPath,
           source_id: src.id,
           pull: !!remoteUrl,
+          phases: AUTOPILOT_PHASES,
         },
         {
           queue: 'default',
