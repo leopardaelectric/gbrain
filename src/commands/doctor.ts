@@ -245,6 +245,28 @@ export interface Check {
   category?: CheckCategory;
 }
 
+export function classifyContentSanityAuditStatus(summary: {
+  by_type: {
+    hard_block: number;
+    quarantine: number;
+    reject: number;
+    flag: number;
+    soft_block: number;
+    warn: number;
+  };
+}): 'ok' | 'warn' | 'fail' {
+  const blockingEvents =
+    summary.by_type.hard_block +
+    summary.by_type.quarantine +
+    summary.by_type.reject;
+  if (blockingEvents > 0) return 'fail';
+
+  const noisyEvents =
+    summary.by_type.flag +
+    summary.by_type.soft_block;
+  return noisyEvents > 0 ? 'warn' : 'ok';
+}
+
 /**
  * Structured doctor report. Stable shape consumed by:
  *   - gbrain doctor --json (CLI)
@@ -1545,7 +1567,7 @@ export async function buildChecks(
   // Engine is nullable in runDoctor (--fast / DB-down skip the DB phase);
   // bail silently here when engine is null since the check needs DB access.
   if (engine !== null) try {
-    const { findMisroutedPages } = await import('../core/multi-source-drift.ts');
+    const { findMisroutedPages, resolveDriftWalkOptionsFromEnv } = await import('../core/multi-source-drift.ts');
     const sources = await engine!.executeRaw<{ id: string; local_path: string | null }>(
       `SELECT id, local_path FROM sources`,
     );
@@ -1554,6 +1576,7 @@ export async function buildChecks(
       const result = await findMisroutedPages(
         engine!,
         nonDefaultWithPath.map(s => ({ id: s.id, local_path: s.local_path as string })),
+        resolveDriftWalkOptionsFromEnv(),
       );
       if (result.walk_truncated) {
         checks.push({
@@ -2427,14 +2450,17 @@ export async function buildChecks(
 
   // 9b. v0.41.18.0 — orphan_ratio check (migration #1 of #1409).
   //
-  // Surfaces the fraction of linkable pages with no inbound links.
+  // Surfaces the fraction of *content* pages with no inbound links.
+  // Structural/source namespaces are excluded in getOrphansData() by
+  // design, so the signal tracks pages that should actually accrue backlinks.
   // Consumes the same canonical getOrphansData() pure fn as
   // `gbrain orphans --count` (D1), so the two surfaces cannot disagree.
   //
-  // Skip when entity count < 100 (vacuous — small brains naturally
-  // show high orphan ratio; not actionable signal).
-  // Warn at >0.5; fail at >0.8. Both states recommend
-  // `gbrain extract links --by-mention` as the fix.
+    // Skip when the candidate universe is tiny (vacuous — small brains or
+    // heavily-structural brains naturally show high orphan ratios; not
+    // actionable signal).
+    // Warn at >0.5; fail at >0.8. Both states recommend
+    // `gbrain extract links --by-mention` as the fix.
   // v0.41.29.0: explicit `--source <id>` scopes this check to one source
   // (orphanRatioSourceId, parsed at the top of buildChecks). The entity-count
   // gate + getOrphansData both scope to it; messages name the source. Bare
@@ -2444,30 +2470,30 @@ export async function buildChecks(
     const { getOrphansData } = await import('./orphans.ts');
     const srcId = orphanRatioSourceId;
     const inSource = srcId ? ` in source '${srcId}'` : '';
+    const data = await getOrphansData(engine, { includePseudo: false, sourceId: srcId });
     const entityCount = (await engine.executeRaw<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM pages WHERE type IN ('entity', 'person', 'company', 'organization') AND deleted_at IS NULL${srcId ? ' AND source_id = $1' : ''}`,
       srcId ? [srcId] : [],
     ))[0]?.count ?? 0;
-    // Brain-wide (no --source): <100 entities is vacuous — small brains
-    // naturally show a high orphan ratio; not actionable signal. Skip.
-    if (entityCount < 100 && !srcId) {
+    const lowScale = entityCount < 100 || data.total_linkable < 100;
+    // Brain-wide (no --source): tiny candidate sets are vacuous — small
+    // brains naturally show a high orphan ratio; not actionable signal. Skip.
+    if (lowScale && !srcId) {
       checks.push({
         name: 'orphan_ratio',
         status: 'ok',
-        message: `Vacuous: ${entityCount} entity pages (<100). Orphan ratio not meaningful at this scale.`,
+        message: `Vacuous: ${entityCount} entity pages / ${data.total_linkable} linkable pages (<100). Orphan ratio not meaningful at this scale.`,
       });
     } else {
       // F7 (Codex): under EXPLICIT --source, an operator deliberately asked
       // about one source — answer it even below 100 entities, with a
       // low-scale caveat, instead of swallowing a real per-source failure
       // (e.g. 80 fully-orphaned entity pages) behind a vacuous "ok".
-      const data = await getOrphansData(engine, { includePseudo: false, sourceId: srcId });
       const ratio = data.total_linkable > 0 ? data.total_orphans / data.total_linkable : 0;
       const pct = (ratio * 100).toFixed(0);
-      const caveat =
-        entityCount < 100
-          ? ` — low scale (${entityCount} entity pages <100), interpret with caution`
-          : '';
+      const caveat = lowScale
+        ? ` — low scale (${entityCount} entity pages, ${data.total_linkable} linkable pages), interpret with caution`
+        : '';
       const hint =
         'Run: gbrain extract links --by-mention   (auto-links entity mentions in body text). ' +
         'Run gbrain orphans for the list.';
@@ -2915,25 +2941,10 @@ export async function buildChecks(
         .slice(0, 3)
         .map(([s, n]) => `${s}=${n}`)
         .join(', ');
-      // Audit events are evidence, not automatically breakage. A large code
-      // source can legitimately emit many WARN events (oversize/markup-heavy)
-      // while remaining searchable and intentionally flagged. Fail on hard
-      // dispositions (content actually blocked or hidden); warn on soft
-      // dispositions or volume. This keeps doctor from treating expected
-      // code-corpus telemetry as an unhealthy brain.
-      //
-      // v0.42 renamed the hard path: a rejected page emits `reject` and a
-      // quarantined (hidden) junk page emits `quarantine`; `hard_block` is now
-      // only the pre-v0.42 legacy alias. Counting `hard_block` alone let fresh
-      // junk-ingest evidence (`reject`/`quarantine`) clear as `ok` whenever
-      // fewer than 10 events landed. `flag` is a warn disposition (still
-      // searchable, agent warned on retrieval), so it joins `soft_block`.
+      const status = classifyContentSanityAuditStatus(summary);
       const hardBlocked =
         summary.by_type.hard_block + summary.by_type.reject + summary.by_type.quarantine;
       const softBlocked = summary.by_type.soft_block + summary.by_type.flag;
-      const status: 'ok' | 'warn' | 'fail' =
-        hardBlocked > 0 ? 'fail' :
-          (softBlocked > 0 || events.length >= 10) ? 'warn' : 'ok';
       checks.push({
         name: 'content_sanity_audit_recent',
         status,
@@ -3274,7 +3285,8 @@ export async function buildChecks(
     // Single SQL grouping by (source_id, reason) over the last 24h. The
     // composite index v50 added (idx_ingest_log_source_type_created on
     // source_id, source_type, created_at DESC) covers this query's
-    // filter + sort path.
+    // filter + sort path. We ignore abort/cancel noise here because it is
+    // teardown plumbing, not a real extraction failure signal.
     const rows = await engine.executeRaw<{
       source_id: string;
       reason: string;
@@ -3287,8 +3299,9 @@ export async function buildChecks(
        FROM ingest_log
        WHERE source_type = 'facts:absorb'
          AND created_at >= now() - INTERVAL '24 hours'
+         AND regexp_replace(summary, '^[^:]+:\\s*', '') !~* '(aborted|cancelled)'
        GROUP BY source_id, split_part(summary, ':', 1)
-       ORDER BY source_id, COUNT(*) DESC`,
+        ORDER BY source_id, COUNT(*) DESC`,
     );
 
     if (rows.length === 0) {

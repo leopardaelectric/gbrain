@@ -65,34 +65,30 @@ export async function checkGraphSignalsCoverage(engine: BrainEngine): Promise<Ch
       };
     }
 
-    // Compute global inbound-link density. Counts DISTINCT pages with
-    // at least one inbound edge / total pages.
-    const totalRows = await engine.executeRaw(`SELECT COUNT(*)::int AS n FROM pages WHERE deleted_at IS NULL`);
-    const totalPages = Number((totalRows as any)[0]?.n ?? 0);
+    // Use the same content universe as orphan_ratio. Structural/source
+    // namespaces are excluded, so this measures pages that can meaningfully
+    // receive graph signals.
+    const { getOrphansData } = await import('../../orphans.ts');
+    const data = await getOrphansData(engine, { includePseudo: false });
+    const totalLinkable = data.total_linkable;
 
-    if (totalPages === 0) {
+    if (totalLinkable === 0) {
       return {
         name: 'graph_signals_coverage',
         status: 'ok',
-        message: 'Empty brain — no pages to compute coverage against',
+        message: 'Empty brain — no linkable pages to compute coverage against',
       };
     }
 
-    const linkedRows = await engine.executeRaw(
-      `SELECT COUNT(DISTINCT l.to_page_id)::int AS n
-       FROM links l
-       JOIN pages p ON p.id = l.to_page_id
-       WHERE p.deleted_at IS NULL`
-    );
-    const linkedPages = Number((linkedRows as any)[0]?.n ?? 0);
-    const pct = (linkedPages / totalPages) * 100;
+    const linkedPages = totalLinkable - data.total_orphans;
+    const pct = (linkedPages / totalLinkable) * 100;
     const pctStr = pct.toFixed(1);
 
     if (pct < 10) {
       return {
         name: 'graph_signals_coverage',
         status: 'warn',
-        message: `graph_signals enabled but only ${pctStr}% of pages have inbound links (<10%). Signal will rarely fire. Fix: \`gbrain extract all\` to populate the link graph from frontmatter + markdown.`,
+        message: `graph_signals enabled but only ${pctStr}% of linkable pages have inbound links (<10%). Signal will rarely fire. Fix: \`gbrain extract all\` to populate the link graph from frontmatter + markdown.`,
       };
     }
 
@@ -100,8 +96,8 @@ export async function checkGraphSignalsCoverage(engine: BrainEngine): Promise<Ch
       name: 'graph_signals_coverage',
       status: 'ok',
       message: pct >= 30
-        ? `${pctStr}% of pages have inbound links (>=30% — graph signals fire on most queries)`
-        : `${pctStr}% of pages have inbound links (10-29% — graph signals fire occasionally)`,
+        ? `${pctStr}% of linkable pages have inbound links (>=30% — graph signals fire on most queries)`
+        : `${pctStr}% of linkable pages have inbound links (10-29% — graph signals fire occasionally)`,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -635,4 +631,3 @@ export async function checkFactsEmbeddingWidthConsistency(engine: BrainEngine): 
     };
   }
 }
-

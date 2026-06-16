@@ -586,6 +586,69 @@ describe('doctor command', () => {
   });
 });
 
+describe('Vammo doctor stability regressions', () => {
+  test('content sanity audit remains healthy for warn-only volume', async () => {
+    const { classifyContentSanityAuditStatus } = await import('../src/commands/doctor.ts');
+    expect(classifyContentSanityAuditStatus({
+      by_type: {
+        hard_block: 0,
+        quarantine: 0,
+        reject: 0,
+        flag: 0,
+        soft_block: 0,
+        warn: 106,
+      },
+    })).toBe('ok');
+    expect(classifyContentSanityAuditStatus({
+      by_type: {
+        hard_block: 0,
+        quarantine: 0,
+        reject: 0,
+        flag: 1,
+        soft_block: 0,
+        warn: 0,
+      },
+    })).toBe('warn');
+    expect(classifyContentSanityAuditStatus({
+      by_type: {
+        hard_block: 1,
+        quarantine: 0,
+        reject: 0,
+        flag: 0,
+        soft_block: 0,
+        warn: 0,
+      },
+    })).toBe('fail');
+  });
+
+  test('subagent capability accepts a gateway loop with a non-Anthropic chat model', async () => {
+    const { checkSubagentCapability } = await import('../src/commands/doctor.ts');
+    const engine = {
+      getConfig: async (key: string) => {
+        if (key === 'agent.use_gateway_loop') return 'true';
+        if (key === 'models.subagent') return null;
+        if (key === 'models.tier.subagent') return null;
+        if (key === 'models.default') return null;
+        return null;
+      },
+    } as any;
+    const originalChat = process.env.GBRAIN_CHAT_MODEL;
+    const originalAnthropic = process.env.ANTHROPIC_API_KEY;
+    try {
+      process.env.GBRAIN_CHAT_MODEL = 'openai:gpt-5.2';
+      delete process.env.ANTHROPIC_API_KEY;
+      const result = await checkSubagentCapability(engine);
+      expect(result.status).toBe('ok');
+      expect(result.message).toContain('gateway loop');
+    } finally {
+      if (originalChat === undefined) delete process.env.GBRAIN_CHAT_MODEL;
+      else process.env.GBRAIN_CHAT_MODEL = originalChat;
+      if (originalAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = originalAnthropic;
+    }
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // v0.31.8 D19 — wedge migration force-retry hint.
 //

@@ -269,7 +269,7 @@ export async function doctorReportRemote(
   // doctor's check at the same name. Runs server-side; the result is
   // returned to the thin-client over MCP.
   try {
-    const { findMisroutedPages } = await import('../../core/multi-source-drift.ts');
+    const { findMisroutedPages, resolveDriftWalkOptionsFromEnv } = await import('../../core/multi-source-drift.ts');
     const sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
       `SELECT id, local_path FROM sources`,
     );
@@ -278,6 +278,7 @@ export async function doctorReportRemote(
       const result = await findMisroutedPages(
         engine,
         nonDefaultWithPath.map(s => ({ id: s.id, local_path: s.local_path as string })),
+        resolveDriftWalkOptionsFromEnv(),
       );
       if (result.walk_truncated) {
         checks.push({

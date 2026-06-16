@@ -109,4 +109,11 @@ describe('autopilot-cycle handler source_id validation + archive recheck', () =>
     const result = await runHandlerOnce({ repoPath: brainDir, source_id: 'echo', pull: false, phases: ['lint'] });
     expect(['ok', 'clean']).toContain(result.status);
   });
+
+  test('missing phases falls back to the full autopilot phase set with gated backfill', async () => {
+    await seedSource('short-cycle');
+    const result = await runHandlerOnce({ repoPath: brainDir, source_id: 'short-cycle' });
+    expect(['ok', 'clean', 'partial']).toContain(result.status);
+    expect(result.report.phases.some((p: any) => p.phase === 'conversation_facts_backfill')).toBe(true);
+  });
 });
