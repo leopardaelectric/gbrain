@@ -114,6 +114,31 @@ describe('loadOpCheckpoint / recordCompleted / clearOpCheckpoint', () => {
     expect(result.sort()).toEqual(['chunk-1', 'chunk-2']);
   });
 
+  test('legacy scalar completed_keys is tolerated instead of crashing', async () => {
+    await engine.executeRaw(
+      `INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
+       VALUES ('embed', 'scalar-legacy', '"legacy-one"'::jsonb, now())`,
+    );
+
+    const result = await loadOpCheckpoint(engine, { op: 'embed', fingerprint: 'scalar-legacy' });
+    expect(result).toEqual(['legacy-one']);
+  });
+
+  test('oversized legacy scalar completed_keys is ignored instead of loaded', async () => {
+    const huge = 'x'.repeat(1_000_001);
+    await engine.executeRaw(
+      `INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
+       VALUES ($1, $2, to_jsonb($3::text), now())`,
+      ['extract-conversation-facts', 'scalar-huge', huge],
+    );
+
+    const result = await loadOpCheckpoint(engine, {
+      op: 'extract-conversation-facts',
+      fingerprint: 'scalar-huge',
+    });
+    expect(result).toEqual([]);
+  });
+
   test('different fingerprints stay isolated', async () => {
     const linksKey = { op: 'extract', fingerprint: 'fp-links' };
     const timelineKey = { op: 'extract', fingerprint: 'fp-timeline' };
@@ -205,6 +230,38 @@ describe('appendCompleted (delta) + union read', () => {
     await recordCompleted(engine, key, ['x', 'y']);
     await recordCompleted(engine, key, ['x']);
     expect((await loadOpCheckpoint(engine, key)).sort()).toEqual(['x']);
+  });
+
+  test('recordCompleted clears appended child rows when replacing', async () => {
+    const key = { op: 'embed', fingerprint: 'fp-replace-child' };
+    await appendCompleted(engine, key, ['stale-a', 'stale-b']);
+    await recordCompleted(engine, key, ['fresh']);
+    expect((await loadOpCheckpoint(engine, key)).sort()).toEqual(['fresh']);
+    expect(await pathRowCount('embed', 'fp-replace-child')).toBe(0);
+  });
+
+  test('recordCompleted stores large replace sets in child rows, not one huge JSONB value', async () => {
+    const key = { op: 'extract-conversation-facts', fingerprint: 'fp-large-replace' };
+    const keys = Array.from({ length: 1005 }, (_, i) => `source|conversation/${i}|2026-06-16T00:00:00.000Z`);
+    expect(await recordCompleted(engine, key, keys)).toBe(true);
+    expect((await loadOpCheckpoint(engine, key)).sort()).toEqual([...keys].sort());
+    expect(await pathRowCount('extract-conversation-facts', 'fp-large-replace')).toBe(keys.length);
+
+    const rows = await engine.executeRaw<{ len: string | number }>(
+      `SELECT jsonb_array_length(completed_keys)::text AS len
+         FROM op_checkpoints
+        WHERE op = $1 AND fingerprint = $2`,
+      [key.op, key.fingerprint],
+    );
+    expect(Number(rows[0]?.len ?? -1)).toBe(0);
+  });
+
+  test('recordCompleted stores moderately large replace sets in child rows too', async () => {
+    const key = { op: 'extract-conversation-facts', fingerprint: 'fp-medium-replace' };
+    const keys = Array.from({ length: 150 }, (_, i) => `source|conversation/${i}|2026-06-16T00:00:00.000Z`);
+    expect(await recordCompleted(engine, key, keys)).toBe(true);
+    expect((await loadOpCheckpoint(engine, key)).sort()).toEqual([...keys].sort());
+    expect(await pathRowCount('extract-conversation-facts', 'fp-medium-replace')).toBe(keys.length);
   });
 
   test('purge of a stale parent cascades to its child rows', async () => {

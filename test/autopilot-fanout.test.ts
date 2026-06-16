@@ -17,8 +17,10 @@ import {
   selectSourcesForDispatch,
   resolveFanoutMax,
   dispatchPerSource,
+  AUTOPILOT_PHASES,
 } from '../src/commands/autopilot-fanout.ts';
 import type { SourceRow, BrainEngine } from '../src/core/engine.ts';
+import { ALL_PHASES } from '../src/core/cycle.ts';
 
 function src(id: string, last_full_cycle_at?: string | null, extra: Record<string, unknown> = {}): SourceRow {
   return {
@@ -195,6 +197,7 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
     expect(added.length).toBe(1);
     expect(added[0].name).toBe('autopilot-cycle');
     expect((added[0].data as Record<string, unknown>).source_id).toBeUndefined();
+    expect((added[0].data as Record<string, unknown>).phases).toEqual(AUTOPILOT_PHASES);
     expect(added[0].opts.idempotency_key).toBe('autopilot-cycle:2026-05-22T12:00:00.000Z');
   });
 
@@ -220,6 +223,9 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
     // source_id threaded through job data
     const sourceIds = added.map(j => (j.data as Record<string, unknown>).source_id).sort();
     expect(sourceIds).toEqual(['alpha', 'beta']);
+    for (const job of added) {
+      expect((job.data as Record<string, unknown>).phases).toEqual(AUTOPILOT_PHASES);
+    }
   });
 
   test('pull: true only when source.config.remote_url is set', async () => {
@@ -314,5 +320,12 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
     expect(result.dispatched.length).toBe(0);
     expect(result.skipped_fresh.length).toBe(2);
     expect(added.length).toBe(0);
+  });
+});
+
+describe('AUTOPILOT_PHASES', () => {
+  test('includes every maintenance phase, including conversation_facts_backfill', () => {
+    expect(AUTOPILOT_PHASES).toEqual(ALL_PHASES);
+    expect(AUTOPILOT_PHASES).toContain('conversation_facts_backfill');
   });
 });

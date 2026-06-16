@@ -4,6 +4,8 @@ import { withRetry, BULK_RETRY_OPTS, RetryAbortError } from './retry.ts';
 
 /** Max paths per append-INSERT round-trip; bounds the param-array size. */
 const APPEND_CHUNK = 1000;
+/** Above this, REPLACE stores keys in op_checkpoint_paths instead of JSONB. */
+const REPLACE_CHILD_ROW_THRESHOLD = 100;
 
 /**
  * Single writable-CTE statement (one round-trip): ensure the parent
@@ -21,6 +23,21 @@ const APPEND_PATHS_SQL = `WITH parent AS (
 INSERT INTO op_checkpoint_paths (op, fingerprint, path)
 SELECT $1, $2, unnest($3::text[])
 ON CONFLICT (op, fingerprint, path) DO NOTHING`;
+
+const RESET_CHECKPOINT_SQL = `WITH parent AS (
+  INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
+  VALUES ($1, $2, '[]'::jsonb, now())
+  ON CONFLICT (op, fingerprint) DO UPDATE
+    SET completed_keys = '[]'::jsonb,
+        updated_at = now()
+  RETURNING 1
+),
+deleted AS (
+  DELETE FROM op_checkpoint_paths
+  WHERE op = $1 AND fingerprint = $2
+  RETURNING 1
+)
+SELECT 1`;
 
 /**
  * v0.42.x (#1794): every checkpoint write routes through the DIRECT session
@@ -189,11 +206,25 @@ export async function recordCompleted(
   // Casting through `text` first binds it as a plain text param so the text→jsonb
   // cast parses it into a genuine jsonb array. This is the positional-param form of
   // the CLAUDE.md double-encode trap (the grep guard only caught the template form).
-  // Sync uses `appendCompleted` (below, `unnest($3::text[])`) instead, never this.
+  // For large sets, store rows in op_checkpoint_paths instead; Postgres rejects
+  // very large JSONB string parameters before they even reach the cast. Both
+  // paths retain REPLACE semantics by clearing stale child rows first.
   const sorted = [...keys].sort();
+  if (sorted.length > REPLACE_CHILD_ROW_THRESHOLD) {
+    const reset = await durableWrite(engine, key, 'reset', () =>
+      engine.executeRawDirect(RESET_CHECKPOINT_SQL, [key.op, key.fingerprint]));
+    if (!reset) return false;
+    return appendCompleted(engine, key, sorted);
+  }
+
   return durableWrite(engine, key, 'write', () =>
     engine.executeRawDirect(
-      `INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
+      `WITH deleted AS (
+         DELETE FROM op_checkpoint_paths
+         WHERE op = $1 AND fingerprint = $2
+         RETURNING 1
+       )
+       INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
        VALUES ($1, $2, $3::text::jsonb, now())
        ON CONFLICT (op, fingerprint) DO UPDATE
          SET completed_keys = EXCLUDED.completed_keys,
