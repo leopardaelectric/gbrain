@@ -32,7 +32,7 @@ import { readFileSync, readdirSync, lstatSync, existsSync } from 'fs';
 import { setCliExitVerdict } from '../core/cli-force-exit.ts';
 import { join, relative, dirname } from 'path';
 import type { BrainEngine, LinkBatchInput, TimelineBatchInput } from '../core/engine.ts';
-import type { PageType } from '../core/types.ts';
+import type { Page, PageType } from '../core/types.ts';
 import { parseMarkdown } from '../core/markdown.ts';
 import {
   extractPageLinks, parseTimelineEntries, deriveTimelineAnchor, inferLinkType, makeResolver,
@@ -1910,21 +1910,25 @@ export async function extractStaleFromDB(
  * source A mentions entity in source B → no link created. v1
  * conservative posture; relaxable in a future wave.
  */
-async function extractMentionsFromDb(
+export async function extractMentionsFromDb(
   engine: BrainEngine,
   dryRun: boolean,
   jsonMode: boolean,
   typeFilter: PageType | undefined,
   since: string | undefined,
-  opts?: { sourceIdFilter?: string },
+  opts?: { sourceIdFilter?: string; slugs?: string[]; quiet?: boolean },
 ): Promise<{ created: number; pages: number }> {
   const sourceIdFilter = opts?.sourceIdFilter;
+  const quiet = opts?.quiet === true;
 
   // Build gazetteer once per run. Skip everything if there are no
   // linkable entities — vacuous truth, no mentions to find.
   const gazetteer = await buildGazetteer(engine);
   if (gazetteer.size === 0) {
-    if (jsonMode) {
+    if (quiet) {
+      // Cycle callers use mention extraction as a maintenance sub-pass; an
+      // empty gazetteer is a clean no-op, not something to print into JSON logs.
+    } else if (jsonMode) {
       process.stdout.write(JSON.stringify({ event: 'no_gazetteer', message: 'no linkable entity pages found; nothing to scan' }) + '\n');
     } else {
       console.log('No linkable entity pages found in this brain (need pages with type IN person/company/organization/entity).');
@@ -1941,9 +1945,48 @@ async function extractMentionsFromDb(
     .digest('hex')
     .slice(0, 8);
 
-  const allRefs = sourceIdFilter
-    ? (await engine.listAllPageRefs()).filter(r => r.source_id === sourceIdFilter)
-    : await engine.listAllPageRefs();
+  const sinceMs = since ? new Date(since).getTime() : null;
+  let candidatePages: Page[] | null = null;
+
+  if (opts?.slugs !== undefined) {
+    candidatePages = [];
+    const seen = new Set<string>();
+    for (const slug of opts.slugs) {
+      const page = await engine.getPage(slug, sourceIdFilter ? { sourceId: sourceIdFilter } : undefined);
+      if (!page) continue;
+      if (typeFilter && page.type !== typeFilter) continue;
+      const key = `${page.source_id}::${page.slug}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidatePages.push(page);
+    }
+  }
+
+  // Incremental mention scans must push the updated_at cutoff into the page
+  // query. Filtering after listAllPageRefs()+getPage() still performs one DB
+  // fetch per page, which makes a daily cron behave like a full-brain sweep.
+  if (since && candidatePages === null) {
+    candidatePages = [];
+    const limit = Math.max(1, Number(process.env.GBRAIN_EXTRACT_MENTION_PAGE_BATCH) || 500);
+    for (let offset = 0; ; offset += limit) {
+      const batch = await engine.listPages({
+        limit,
+        offset,
+        updated_after: since,
+        sort: 'updated_asc',
+        ...(typeFilter ? { type: typeFilter } : {}),
+        ...(sourceIdFilter ? { sourceId: sourceIdFilter } : {}),
+      });
+      candidatePages.push(...batch);
+      if (batch.length < limit) break;
+    }
+  }
+
+  const allRefs = candidatePages
+    ? candidatePages.map(page => ({ slug: page.slug, source_id: page.source_id }))
+    : sourceIdFilter
+      ? (await engine.listAllPageRefs()).filter(r => r.source_id === sourceIdFilter)
+      : await engine.listAllPageRefs();
 
   // v0.41.19.0 (T5): load checkpoint and skip already-completed
   // (source_id, slug) pairs. Dry-run does NOT load OR persist the
@@ -1958,14 +2001,15 @@ async function extractMentionsFromDb(
       gazetteerHash,
     }),
   };
-  const completed = dryRun
+  const useCheckpoint = opts?.slugs === undefined;
+  const completed = dryRun || !useCheckpoint
     ? new Set<string>()
     : new Set(await loadOpCheckpoint(engine, ckptKey));
   const remaining = completed.size > 0
     ? allRefs.filter(r => !completed.has(`${r.source_id}::${r.slug}`))
     : allRefs;
 
-  if (completed.size > 0 && !jsonMode) {
+  if (completed.size > 0 && !jsonMode && !quiet) {
     console.log(`[by-mention] resuming: ${completed.size}/${allRefs.length} pages already scanned, ${remaining.length} remaining`);
   }
 
@@ -2013,21 +2057,25 @@ async function extractMentionsFromDb(
     if (dryRun) return;
     const now = Date.now();
     if (force || unpersistedCount >= PERSIST_EVERY_N || (now - sinceLastPersistMs) >= PERSIST_EVERY_MS) {
-      await recordCompleted(engine, ckptKey, [...completed]);
+      if (useCheckpoint) await recordCompleted(engine, ckptKey, [...completed]);
       unpersistedCount = 0;
       sinceLastPersistMs = now;
     }
   }
 
-  const sinceMs = since ? new Date(since).getTime() : null;
+  const candidatePagesByKey = candidatePages
+    ? new Map(candidatePages.map(page => [`${page.source_id}::${page.slug}`, page] as const))
+    : null;
 
   for (const { slug, source_id } of remaining) {
-    const page = await engine.getPage(slug, { sourceId: source_id });
+    const key = `${source_id}::${slug}`;
+    const page = candidatePagesByKey
+      ? candidatePagesByKey.get(key) ?? null
+      : await engine.getPage(slug, { sourceId: source_id });
     // v0.41.19.0 (T5 — codex fix #4): even when we skip a page (filter
     // miss, missing row, empty body, no mentions), MARK IT COMPLETED so
     // resume doesn't re-fetch it. The decision NOT to create links is
     // itself a completed decision.
-    const key = `${source_id}::${slug}`;
     if (!page || (typeFilter && page.type !== typeFilter)) {
       pendingForFlush.push(key);
       unpersistedCount++;
@@ -2111,9 +2159,9 @@ async function extractMentionsFromDb(
   }
   progress.finish();
 
-  if (!dryRun) await clearOpCheckpoint(engine, ckptKey); // clean exit
+  if (!dryRun && useCheckpoint) await clearOpCheckpoint(engine, ckptKey); // clean exit
 
-  if (!jsonMode) {
+  if (!jsonMode && !quiet) {
     const label = dryRun ? '(dry run) would create' : 'created';
     console.log(`Mentions: ${label} ${created} links from ${processed} pages against gazetteer of ${gazetteer.size} first-token buckets`);
   }

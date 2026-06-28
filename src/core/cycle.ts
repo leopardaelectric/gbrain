@@ -1106,7 +1106,7 @@ async function runPhaseExtract(
   sourceId?: string,
 ): Promise<PhaseResult> {
   try {
-    const { runExtractCore } = await import('../commands/extract.ts');
+    const { extractMentionsFromDb, runExtractCore } = await import('../commands/extract.ts');
     const { loadConfig } = await import('./config.ts');
     // Default off: the incremental cycle extracts body links only unless the
     // operator opts in to keeping externally-edited frontmatter links fresh too.
@@ -1144,18 +1144,32 @@ async function runPhaseExtract(
       sourceId,
       includeFrontmatter,  // honored on the incremental (slugs) path only
     });
+    const { materializeLoopStructuralLinks } = await import('./cycle/loop-structural-links.ts');
+    const loopLinks = await materializeLoopStructuralLinks(engine);
+    const mentionLinks = await extractMentionsFromDb(engine, false, true, undefined, undefined, {
+      sourceIdFilter: sourceId,
+      slugs: changedSlugs,
+      quiet: true,
+    });
     const linksCreated = result?.links_created ?? 0;
     const timelineCreated = result?.timeline_entries_created ?? 0;
+    const loopLinksCreated = loopLinks.links_created;
+    const mentionLinksCreated = mentionLinks.created;
     const incremental = changedSlugs !== undefined;
     return {
       phase: 'extract',
       status: 'ok',
       duration_ms: 0,
       summary: incremental
-        ? `${linksCreated} link(s), ${timelineCreated} timeline entries (incremental: ${changedSlugs.length} slugs)`
-        : `${linksCreated} link(s), ${timelineCreated} timeline entries`,
+        ? `${linksCreated} link(s), ${mentionLinksCreated} mention link(s), ${timelineCreated} timeline entries, ${loopLinksCreated} loop structural link(s) (incremental: ${changedSlugs.length} slugs)`
+        : `${linksCreated} link(s), ${mentionLinksCreated} mention link(s), ${timelineCreated} timeline entries, ${loopLinksCreated} loop structural link(s)`,
       details: {
         linksCreated, timelineCreated,
+        mention_links_created: mentionLinksCreated,
+        mention_pages_scanned: mentionLinks.pages,
+        loop_structural_links_created: loopLinksCreated,
+        loop_structural_links_considered: loopLinks.links_considered,
+        loop_pages_scanned: loopLinks.pages_scanned,
         pages_processed: result?.pages_processed ?? 0,
         incremental,
         ...(incremental ? { slugs_targeted: changedSlugs.length } : {}),
