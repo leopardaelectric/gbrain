@@ -931,9 +931,10 @@ async function runPhaseExtract(
   brainDir: string,
   dryRun: boolean,
   changedSlugs?: string[],
+  sourceId?: string,
 ): Promise<PhaseResult> {
   try {
-    const { runExtractCore } = await import('../commands/extract.ts');
+    const { extractMentionsFromDb, runExtractCore } = await import('../commands/extract.ts');
     // Extract is read-mostly against the filesystem + write to links table.
     // Honor dryRun by skipping with a 'skipped' entry: extract doesn't have
     // a clean dry-run mode today and runCycle should be honest about it.
@@ -953,18 +954,32 @@ async function runPhaseExtract(
       dir: brainDir,
       slugs: changedSlugs,  // undefined = full walk (first run / manual)
     });
+    const { materializeLoopStructuralLinks } = await import('./cycle/loop-structural-links.ts');
+    const loopLinks = await materializeLoopStructuralLinks(engine);
+    const mentionLinks = await extractMentionsFromDb(engine, false, true, undefined, undefined, {
+      sourceIdFilter: sourceId,
+      slugs: changedSlugs,
+      quiet: true,
+    });
     const linksCreated = result?.links_created ?? 0;
     const timelineCreated = result?.timeline_entries_created ?? 0;
+    const loopLinksCreated = loopLinks.links_created;
+    const mentionLinksCreated = mentionLinks.created;
     const incremental = changedSlugs !== undefined;
     return {
       phase: 'extract',
       status: 'ok',
       duration_ms: 0,
       summary: incremental
-        ? `${linksCreated} link(s), ${timelineCreated} timeline entries (incremental: ${changedSlugs.length} slugs)`
-        : `${linksCreated} link(s), ${timelineCreated} timeline entries`,
+        ? `${linksCreated} link(s), ${mentionLinksCreated} mention link(s), ${timelineCreated} timeline entries, ${loopLinksCreated} loop structural link(s) (incremental: ${changedSlugs.length} slugs)`
+        : `${linksCreated} link(s), ${mentionLinksCreated} mention link(s), ${timelineCreated} timeline entries, ${loopLinksCreated} loop structural link(s)`,
       details: {
         linksCreated, timelineCreated,
+        mention_links_created: mentionLinksCreated,
+        mention_pages_scanned: mentionLinks.pages,
+        loop_structural_links_created: loopLinksCreated,
+        loop_structural_links_considered: loopLinks.links_considered,
+        loop_pages_scanned: loopLinks.pages_scanned,
         pages_processed: result?.pages_processed ?? 0,
         incremental,
         ...(incremental ? { slugs_targeted: changedSlugs.length } : {}),
@@ -1627,7 +1642,7 @@ export async function runCycle(
         // If sync didn't run (phases exclude it) or failed, syncPagesAffected
         // is undefined → extract falls back to full walk (safe default).
         progress.start('cycle.extract');
-        const { result, duration_ms } = await timePhase(() => runPhaseExtract(engine, brainDir, dryRun, syncPagesAffected));
+        const { result, duration_ms } = await timePhase(() => runPhaseExtract(engine, brainDir, dryRun, syncPagesAffected, cycleSourceId));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
         progress.finish();
