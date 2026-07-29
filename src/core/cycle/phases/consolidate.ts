@@ -26,9 +26,14 @@ import type { BrainEngine, FactRow } from '../../engine.ts';
 import type { PhaseResult } from '../../cycle.ts';
 import { cosineSimilarity } from '../../facts/classify.ts';
 import { resolveEntitySlugWithSource } from '../../entities/resolve.ts';
+import { materializeConsolidatedTake } from '../consolidate-takes-fs.ts';
 
 export interface ConsolidatePhaseOpts {
   dryRun?: boolean;
+  /** Canonical source checkout. Null/undefined means DB-only promotion is forbidden. */
+  brainDir?: string | null;
+  /** Restrict consolidation to the cycle's resolved source. */
+  sourceId?: string;
   /** In-phase keepalive callback. Awaited between buckets. */
   yieldDuringPhase?: () => Promise<void>;
   /** Cosine cluster threshold. Default 0.85. */
@@ -53,11 +58,15 @@ export async function runPhaseConsolidate(
   let bucketsProcessed = 0;
   let bucketsSkipped = 0;
   let bucketsCanonicalized = 0;
+  let takesSkippedNoMarkdown = 0;
+  const materializationErrors: string[] = [];
 
   // Pull every (source_id, entity_slug) bucket of unconsolidated facts.
   // Uses the partial idx_facts_unconsolidated index.
   let buckets: Array<{ source_id: string; entity_slug: string; count: number }>;
   try {
+    const sourceFilter = opts.sourceId ? 'AND source_id = $1' : '';
+    const sourceParams = opts.sourceId ? [opts.sourceId] : [];
     buckets = await engine.executeRaw<{
       source_id: string; entity_slug: string; count: number;
     }>(`
@@ -66,9 +75,10 @@ export async function runPhaseConsolidate(
       WHERE consolidated_at IS NULL
         AND expired_at IS NULL
         AND entity_slug IS NOT NULL
+        ${sourceFilter}
       GROUP BY source_id, entity_slug
       HAVING COUNT(*) >= ${minPerBucket}
-    `);
+    `, sourceParams);
   } catch (err) {
     return {
       phase: 'consolidate',
@@ -150,13 +160,6 @@ export async function runPhaseConsolidate(
     }
     const pageId = pageRows[0].id;
 
-    // Existing row_num max for this page → start appending after it.
-    const rowMaxRows = await engine.executeRaw<{ max: number }>(
-      `SELECT COALESCE(MAX(row_num), 0)::int AS max FROM takes WHERE page_id = $1`,
-      [pageId],
-    );
-    let nextRowNum = (rowMaxRows[0]?.max ?? 0) + 1;
-
     for (const cluster of clusters) {
       if (cluster.length < 2) continue;
       // Take selection: pick the highest-confidence fact's text as the
@@ -175,62 +178,47 @@ export async function runPhaseConsolidate(
         // Pretend we did it.
         takesWritten += 1;
         factsConsolidated += cluster.length;
-        nextRowNum += 1;
         continue;
       }
 
-      // v0.35.4 (D-CDX-4) — semantic upsert. The full dream cycle runs
-      // `extract_facts` BEFORE `consolidate`; `extract_facts` hard-deletes
-      // and re-inserts page facts via deleteFactsForPage + insertFacts,
-      // which clears `consolidated_at` on every fact. Without this lookup,
-      // a second cycle run would re-INSERT a duplicate take via
-      // `MAX(row_num)+1`, silently poisoning trajectory + scorecard data.
-      // Match on (page_id, claim, since_date) — the natural identity of a
-      // promoted take.
-      const existing = await engine.executeRaw<{ id: number }>(
-        `SELECT id FROM takes
-         WHERE page_id = $1 AND claim = $2 AND since_date = $3
-         LIMIT 1`,
-        [pageId, best.fact, sinceISO],
-      );
-
-      let takeId: number;
-      if (existing.length > 0) {
-        // Re-promotion of a cluster we already wrote a take for. Refresh
-        // the source-aggregation string (new fact rows may carry new
-        // source_session values that the prior run didn't see); leave
-        // row_num + weight untouched to keep the take's identity stable.
-        takeId = existing[0].id;
-        await engine.executeRaw(
-          `UPDATE takes SET source = $1, updated_at = now() WHERE id = $2`,
-          [sources.slice(0, 200), takeId],
+      // Markdown is canonical. Materialize the promoted take in the fenced
+      // page first, atomically, then mirror that exact row into the DB.
+      // Facts are not marked consolidated unless both steps succeed.
+      let materialized;
+      try {
+        materialized = await materializeConsolidatedTake(
+          engine,
+          {
+            sourceId: b.source_id,
+            localPath: opts.brainDir ?? null,
+            slug: canonicalSlug,
+            pageId,
+          },
+          {
+            claim: best.fact,
+            weight: clamp01(avgWeight),
+            sinceDate: sinceISO,
+            source: sources.slice(0, 200),
+          },
         );
-      } else {
-        const inserted = await engine.addTakesBatch([{
-          page_id: pageId,
-          row_num: nextRowNum,
-          claim: best.fact,
-          kind: 'fact',
-          holder: 'self',
-          weight: clamp01(avgWeight),
-          since_date: sinceISO,
-          source: sources.slice(0, 200),
-          active: true,
-        }]);
-        if (inserted < 1) continue;
-
-        const idRows = await engine.executeRaw<{ id: number }>(
-          `SELECT id FROM takes WHERE page_id = $1 AND row_num = $2`,
-          [pageId, nextRowNum],
+      } catch (error) {
+        takesSkippedNoMarkdown += 1;
+        materializationErrors.push(
+          `${b.source_id}:${canonicalSlug}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
-        if (idRows.length === 0) {
-          nextRowNum += 1;
-          continue;
-        }
-        takeId = idRows[0].id;
-        nextRowNum += 1;
-        takesWritten += 1;
+        continue;
       }
+      if (materialized.status === 'skipped') {
+        takesSkippedNoMarkdown += 1;
+        materializationErrors.push(
+          `${b.source_id}:${canonicalSlug}: ${materialized.reason}`,
+        );
+        continue;
+      }
+      const takeId = materialized.takeId;
+      if (materialized.created) takesWritten += 1;
 
       // Mark all contributing facts consolidated.
       for (const f of cluster) {
@@ -285,6 +273,8 @@ export async function runPhaseConsolidate(
       buckets_processed: bucketsProcessed,
       buckets_skipped: bucketsSkipped,
       buckets_canonicalized: bucketsCanonicalized,
+      takes_skipped_no_markdown: takesSkippedNoMarkdown,
+      materialization_errors: materializationErrors.slice(0, 20),
     },
   };
 }

@@ -1911,6 +1911,8 @@ export async function runCycle(
         const { runPhaseConsolidate } = await import('./cycle/phases/consolidate.ts');
         const { result, duration_ms } = await timePhase(() => runPhaseConsolidate(engine, {
           dryRun,
+          brainDir,
+          sourceId: cycleSourceId ?? (brainDir === null ? undefined : 'default'),
           yieldDuringPhase: opts.yieldDuringPhase,
         }));
         result.duration_ms = duration_ms;

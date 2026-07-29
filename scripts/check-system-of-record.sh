@@ -46,6 +46,7 @@ PATTERNS=(
   'engine\.addLinksBatch\('
   'engine\.addTimelineEntry\('
   'engine\.upsertTake\('
+  'engine\.addTakesBatch\('
   'engine\.expireFact\('
 )
 
@@ -89,7 +90,8 @@ if [ -n "$violations" ]; then
   echo
   echo "ERROR: direct writes to derived tables found outside the reconcile layer."
   echo "       Every call to engine.insertFact / insertFacts / addLink /"
-  echo "       addLinksBatch / addTimelineEntry / upsertTake / expireFact must"
+  echo "       addLinksBatch / addTimelineEntry / upsertTake / addTakesBatch /"
+  echo "       expireFact must"
   echo "       either route through the extract / cycle / migration path OR"
   echo "       carry an explicit \`// gbrain-allow-direct-insert: <reason>\`"
   echo "       comment on the SAME LINE. See docs/architecture/system-of-record.md."

@@ -196,7 +196,7 @@ async function cmdAdd(engine: BrainEngine, args: string[]): Promise<void> {
 
     // Mirror to DB. Page may not be in DB yet if not synced — caller must run sync first.
     const pageId = await getPageId(engine, slug);
-    await engine.addTakesBatch([{
+    await engine.addTakesBatch([{ // gbrain-allow-direct-insert: takes add mirrors only after the canonical Markdown fence write
       page_id: pageId, row_num: rowNum, claim, kind, holder, weight,
       since_date: since, source, active: true, superseded_by: null,
     }]);

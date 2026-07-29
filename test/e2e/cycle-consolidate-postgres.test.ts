@@ -11,14 +11,38 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { setupDB, teardownDB, hasDatabase, getEngine } from './helpers.ts';
 import { runPhaseConsolidate } from '../../src/core/cycle/phases/consolidate.ts';
 
 const RUN = hasDatabase();
 const d = RUN ? describe : describe.skip;
+let brainDir: string;
 
-beforeAll(async () => { if (RUN) await setupDB(); });
-afterAll(async () => { if (RUN) await teardownDB(); });
+beforeAll(async () => {
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-consolidate-pg-'));
+  if (RUN) await setupDB();
+});
+afterAll(async () => {
+  if (RUN) await teardownDB();
+  rmSync(brainDir, { recursive: true, force: true });
+});
+
+function writePage(slug: string): void {
+  const path = join(brainDir, `${slug}.md`);
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, `---\ntype: concept\ntitle: Test\nslug: ${slug}\n---\n\n# Test\n`);
+}
+
+function runConsolidate(dryRun = false) {
+  return runPhaseConsolidate(getEngine(), {
+    brainDir,
+    sourceId: 'default',
+    dryRun,
+  });
+}
 
 const oldDate = () => new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString();
 function unitVec(): string {
@@ -38,6 +62,7 @@ d('cycle consolidate phase (Postgres)', () => {
       `SELECT id FROM pages WHERE slug = 'people/post-cons-alice'`,
     );
     const pageId = pageRows[0].id;
+    writePage('people/post-cons-alice');
 
     for (let i = 0; i < 4; i++) {
       await engine.executeRaw(
@@ -47,7 +72,7 @@ d('cycle consolidate phase (Postgres)', () => {
       );
     }
 
-    const result = await runPhaseConsolidate(engine, {});
+    const result = await runConsolidate();
     expect(result.details.facts_consolidated).toBe(4);
     expect(result.details.takes_written).toBe(1);
 
@@ -88,7 +113,7 @@ d('cycle consolidate phase (Postgres)', () => {
         [`recent fact ${i}`, recent, unitVec()],
       );
     }
-    const result = await runPhaseConsolidate(engine, {});
+    const result = await runConsolidate();
     // 'cons-recent' bucket should be skipped (oldest fact too young).
     const takes = await engine.executeRaw<{ id: number }>(
       `SELECT t.id FROM takes t JOIN pages p ON p.id = t.page_id WHERE p.slug = 'cons-recent'`,
@@ -112,7 +137,7 @@ d('cycle consolidate phase (Postgres)', () => {
     const before = await engine.executeRaw<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM takes t JOIN pages p ON p.id = t.page_id WHERE p.slug = 'cons-dryrun-pg'`,
     );
-    const result = await runPhaseConsolidate(engine, { dryRun: true });
+    const result = await runConsolidate(true);
     expect(result.details.dryRun).toBe(true);
     expect(result.details.facts_consolidated).toBe(3);
     expect(result.details.takes_written).toBe(1);
