@@ -106,6 +106,46 @@ export function classifyContentSanityAuditStatus(summary: {
 }
 
 /**
+ * Aggregate the source-scoped facts health snapshots that actually exist in
+ * the facts table. `default` is not special in a multi-source brain: imported
+ * facts commonly live entirely under the canonical Git source.
+ */
+export async function checkFactsHealth(engine: BrainEngine): Promise<Check> {
+  const sourceRows = await engine.executeRaw<{ source_id: string }>(
+    `SELECT DISTINCT source_id FROM facts ORDER BY source_id`,
+  );
+  const snapshots = await Promise.all(
+    sourceRows.map(({ source_id }) => engine.getFactsHealth(source_id)),
+  );
+
+  const totals = snapshots.reduce(
+    (sum, health) => ({
+      active: sum.active + health.total_active,
+      today: sum.today + health.total_today,
+      week: sum.week + health.total_week,
+      expired: sum.expired + health.total_expired,
+      consolidated: sum.consolidated + health.total_consolidated,
+    }),
+    { active: 0, today: 0, week: 0, expired: 0, consolidated: 0 },
+  );
+  const topSources = [...snapshots]
+    .sort((a, b) => b.total_active - a.total_active || a.source_id.localeCompare(b.source_id))
+    .slice(0, 3)
+    .map(health => `${health.source_id}:${health.total_active}`)
+    .join(', ') || '—';
+
+  return {
+    name: 'facts_health',
+    status: 'ok',
+    message:
+      `facts_health(all sources): ${totals.active} active, ` +
+      `${totals.today} today, ${totals.week} this week, ` +
+      `${totals.consolidated} consolidated, ${totals.expired} expired, ` +
+      `top sources ${topSources}`,
+  };
+}
+
+/**
  * Structured doctor report. Stable shape consumed by:
  *   - gbrain doctor --json (CLI)
  *   - run_doctor MCP op (remote callers)
@@ -6768,21 +6808,7 @@ export async function buildChecks(
       `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'facts') AS exists`,
     );
     if (factsExists[0]?.exists) {
-      const health = await engine.getFactsHealth('default');
-      const status: 'ok' | 'warn' = health.total_active >= 0 ? 'ok' : 'warn';
-      const top = health.top_entities
-        .slice(0, 3)
-        .map(t => `${t.entity_slug}:${t.count}`)
-        .join(', ') || '—';
-      checks.push({
-        name: 'facts_health',
-        status,
-        message:
-          `facts_health(default): ${health.total_active} active, ` +
-          `${health.total_today} today, ${health.total_week} this week, ` +
-          `${health.total_consolidated} consolidated, ` +
-          `top entities ${top}`,
-      });
+      checks.push(await checkFactsHealth(engine));
     } else {
       checks.push({
         name: 'facts_health',
