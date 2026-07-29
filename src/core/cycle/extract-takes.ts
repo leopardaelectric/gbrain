@@ -105,7 +105,7 @@ async function flushBatch(
   if (dryRun) {
     result.takesUpserted += buffer.length;
   } else {
-    const inserted = await engine.addTakesBatch(buffer);
+    const inserted = await engine.addTakesBatch(buffer); // gbrain-allow-direct-insert: extract-takes is the Markdown-fence-to-DB reconciler
     result.takesUpserted += inserted;
   }
   buffer.length = 0;

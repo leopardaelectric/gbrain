@@ -1,7 +1,8 @@
 // src/core/extract-takes-from-pages.ts
 // v0.41.18.0 (A12, A24, T9). Haiku classifier loop over allowlisted page
 // types — concept, atom, lore, briefing, writing, originals — extracts
-// gradeable claims and inserts them as takes fence rows.
+// gradeable claims and writes them to canonical takes fence rows before
+// mirroring those rows into the DB.
 //
 // Two-gate consent per A12:
 //   - takes.bootstrap_enabled (default false): must be true to run at all.
@@ -13,9 +14,21 @@
 // 100+-case eval suite. v0.42 ships the classifier + CLI; autopilot stays
 // blocked until eval coverage catches up.
 
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { join } from 'node:path';
+
 import type { BrainEngine } from './engine.ts';
 import type { TakeBatchInput, TakeKind } from './engine.ts';
 import { chat, getChatModel, isAvailable } from './ai/gateway.ts';
+import { withPageLock } from './page-lock.ts';
+import { parseTakesFence, upsertTakeRow } from './takes-fence.ts';
 
 export const ALLOWED_PAGE_TYPES = [
   'concept', 'atom', 'lore', 'briefing', 'writing', 'originals',
@@ -79,11 +92,24 @@ interface PageRow {
   updated_at: string | Date;
 }
 
+export interface ExtractedTakeClaim {
+  claim: string;
+  kind: TakeKind;
+  weight: number;
+}
+
+export interface ExtractedTakesPageTarget {
+  localPath: string | null;
+  pageId: number;
+  slug: string;
+  holder: string;
+}
+
 /**
  * Pure helper: parse Haiku JSON output into typed claims. Returns []
  * on any parse failure (caller treats as "no claims extracted").
  */
-export function parseClaimsJson(raw: string): Array<{ claim: string; kind: TakeKind; weight: number }> {
+export function parseClaimsJson(raw: string): ExtractedTakeClaim[] {
   try {
     // Strip code fences if model wrapped output in ```json.
     let text = raw.trim();
@@ -91,7 +117,7 @@ export function parseClaimsJson(raw: string): Array<{ claim: string; kind: TakeK
     if (fenceMatch) text = fenceMatch[1].trim();
     const parsed = JSON.parse(text);
     if (!Array.isArray(parsed)) return [];
-    const valid: Array<{ claim: string; kind: TakeKind; weight: number }> = [];
+    const valid: ExtractedTakeClaim[] = [];
     for (const item of parsed) {
       if (!item || typeof item !== 'object') continue;
       const claim = typeof item.claim === 'string' ? item.claim.trim().slice(0, 200) : '';
@@ -105,6 +131,106 @@ export function parseClaimsJson(raw: string): Array<{ claim: string; kind: TakeK
   } catch {
     return [];
   }
+}
+
+/**
+ * Persist classifier-generated takes through their canonical Markdown fence,
+ * then mirror those exact rows to the DB. Existing semantic rows are included
+ * in the DB mirror so a prior post-rename DB failure repairs on retry.
+ *
+ * Returns the number of new Markdown rows appended, not the number of DB
+ * upserts, so idempotent reruns report zero new claims.
+ */
+export async function writeExtractedTakesToPage(
+  engine: BrainEngine,
+  target: ExtractedTakesPageTarget,
+  claims: ExtractedTakeClaim[],
+): Promise<number> {
+  if (target.localPath === null || claims.length === 0) return 0;
+  const filePath = join(target.localPath, `${target.slug}.md`);
+  if (!existsSync(filePath)) return 0;
+
+  return withPageLock(
+    target.slug,
+    async () => {
+      let body = readFileSync(filePath, 'utf8');
+      const initial = parseTakesFence(body);
+      if (initial.warnings.length > 0) {
+        throw new Error(`takes fence invalid: ${initial.warnings.join('; ')}`);
+      }
+
+      const rowByIdentity = new Map(
+        initial.takes.map(take => [
+          `${take.kind}\u0000${take.holder}\u0000${take.claim}`,
+          take,
+        ]),
+      );
+      const batch: TakeBatchInput[] = [];
+      let appended = 0;
+
+      for (const claim of claims) {
+        const identity = `${claim.kind}\u0000${target.holder}\u0000${claim.claim}`;
+        let take = rowByIdentity.get(identity);
+        if (!take) {
+          const written = upsertTakeRow(body, {
+            claim: claim.claim,
+            kind: claim.kind,
+            holder: target.holder,
+            weight: claim.weight,
+            source: 'cli:takes-bootstrap-from-pages',
+            active: true,
+          });
+          body = written.body;
+          take = parseTakesFence(body).takes.find(t => t.rowNum === written.rowNum);
+          if (!take) {
+            throw new Error(
+              `rendered take row missing: ${target.slug}#${written.rowNum}`,
+            );
+          }
+          rowByIdentity.set(identity, take);
+          appended += 1;
+        }
+        batch.push({
+          page_id: target.pageId,
+          row_num: take.rowNum,
+          claim: take.claim,
+          kind: take.kind,
+          holder: take.holder,
+          weight: take.weight,
+          since_date: take.sinceDate,
+          until_date: take.untilDate,
+          source: take.source,
+          active: take.active,
+        });
+      }
+
+      if (appended > 0) {
+        const tmpPath =
+          `${filePath}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`;
+        try {
+          writeFileSync(tmpPath, body, 'utf8');
+          const reparsed = parseTakesFence(readFileSync(tmpPath, 'utf8'));
+          if (reparsed.warnings.length > 0) {
+            throw new Error(
+              `rendered takes fence invalid: ${reparsed.warnings.join('; ')}`,
+            );
+          }
+          renameSync(tmpPath, filePath);
+        } catch (error) {
+          try {
+            if (existsSync(tmpPath)) unlinkSync(tmpPath);
+          } catch {
+            // Best-effort temp cleanup; preserve the original error.
+          }
+          throw error;
+        }
+      }
+
+      await engine.addTakesBatch(batch); // gbrain-allow-direct-insert: classifier takes are mirrored only after their canonical Markdown rows exist
+      return appended;
+    },
+    { timeoutMs: 5_000 },
+  );
 }
 
 export async function extractTakesFromPages(
@@ -162,21 +288,14 @@ export async function extractTakesFromPages(
 
   let pagesScanned = 0;
   let claimsExtracted = 0;
-  const batch: TakeBatchInput[] = [];
-
-  async function flush() {
-    if (batch.length === 0) return;
-    if (!dryRun) {
-      try {
-        claimsExtracted += await engine.addTakesBatch(batch);
-      } catch {
-        // batch error — drop and continue with subsequent pages
-      }
-    } else {
-      claimsExtracted += batch.length;
-    }
-    batch.length = 0;
-  }
+  const sourceRows = await engine.executeRaw<{
+    id: string;
+    local_path: string | null;
+  }>(`SELECT id, local_path FROM sources`);
+  const sourcePaths = new Map(
+    sourceRows.map(row => [row.id, row.local_path] as const),
+  );
+  const legacyRepoPath = await engine.getConfig('sync.repo_path');
 
   for (const page of pages) {
     pagesScanned++;
@@ -213,27 +332,28 @@ export async function extractTakesFromPages(
     const claims = parseClaimsJson(response.text);
     if (claims.length === 0) continue;
 
-    // Assign row_num starting from 1 per page. We don't query existing
-    // takes for the page — collisions on (page_id, row_num) are an existing
-    // bug class addresses by extract-conversation-facts; takes-bootstrap
-    // inherits the same posture: writes start at row_num=1 and the engine's
-    // unique constraint surfaces duplicates as failures (caller re-runs).
-    for (let i = 0; i < claims.length; i++) {
-      const c = claims[i];
-      batch.push({
-        page_id: page.id,
-        row_num: i + 1,
-        claim: c.claim,
-        kind: c.kind,
-        holder,
-        weight: c.weight,
-        source: 'cli:takes-bootstrap-from-pages',
-      });
+    if (dryRun) {
+      claimsExtracted += claims.length;
+      continue;
     }
-    if (batch.length >= 200) await flush();
+    const localPath = sourcePaths.get(page.source_id)
+      ?? (page.source_id === 'default' ? legacyRepoPath : null);
+    try {
+      claimsExtracted += await writeExtractedTakesToPage(
+        engine,
+        {
+          localPath,
+          pageId: page.id,
+          slug: page.slug,
+          holder,
+        },
+        claims,
+      );
+    } catch {
+      // Per-page durability failure: leave DB untouched and continue.
+    }
   }
 
-  await flush();
   return {
     pages_scanned: pagesScanned,
     claims_extracted: claimsExtracted,

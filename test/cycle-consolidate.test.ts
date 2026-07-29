@@ -9,13 +9,22 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { configureGateway } from '../src/core/ai/gateway.ts';
-import { runPhaseConsolidate } from '../src/core/cycle/phases/consolidate.ts';
+import {
+  runPhaseConsolidate,
+  type ConsolidatePhaseOpts,
+} from '../src/core/cycle/phases/consolidate.ts';
+import { parseTakesFence } from '../src/core/takes-fence.ts';
 
 let engine: PGLiteEngine;
+let brainDir: string;
 
 beforeAll(async () => {
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-consolidate-'));
   engine = new PGLiteEngine();
   await engine.connect({});
   // initSchema() bakes the facts.embedding dim from the gateway's configured
@@ -37,12 +46,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await engine.disconnect();
+  rmSync(brainDir, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
   // Clean facts + takes between tests for hermetic state.
   await engine.executeRaw(`DELETE FROM facts`);
   await engine.executeRaw(`DELETE FROM takes`);
+  rmSync(brainDir, { recursive: true, force: true });
+  mkdirSync(brainDir, { recursive: true });
 });
 
 const oldDate = () => new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString();
@@ -62,7 +74,21 @@ async function seedPage(slug: string): Promise<number> {
     `SELECT id FROM pages WHERE slug = $1 AND source_id = 'default'`,
     [slug],
   );
+  const filePath = join(brainDir, `${slug}.md`);
+  mkdirSync(join(filePath, '..'), { recursive: true });
+  writeFileSync(
+    filePath,
+    `---\ntype: concept\ntitle: Test\nslug: ${slug}\n---\n\n# Test\n`,
+  );
   return r[0].id;
+}
+
+function runConsolidate(opts: ConsolidatePhaseOpts = {}) {
+  return runPhaseConsolidate(engine, {
+    brainDir,
+    sourceId: 'default',
+    ...opts,
+  });
 }
 
 describe('runPhaseConsolidate', () => {
@@ -75,7 +101,7 @@ describe('runPhaseConsolidate', () => {
         [`fact ${i}`, oldDate(), unitVec()],
       );
     }
-    const r = await runPhaseConsolidate(engine, {});
+    const r = await runConsolidate();
     expect(r.details.facts_consolidated).toBe(0);
     expect(r.details.takes_written).toBe(0);
   });
@@ -89,7 +115,7 @@ describe('runPhaseConsolidate', () => {
         [`fact ${i}`, recentDate(), unitVec()],
       );
     }
-    const r = await runPhaseConsolidate(engine, {});
+    const r = await runConsolidate();
     expect(r.details.facts_consolidated).toBe(0);
     expect(r.details.buckets_skipped).toBeGreaterThanOrEqual(1);
   });
@@ -104,7 +130,7 @@ describe('runPhaseConsolidate', () => {
         [`alice fact ${i}`, oldDate(), unitVec()],
       );
     }
-    const r = await runPhaseConsolidate(engine, {});
+    const r = await runConsolidate();
     expect(r.details.facts_consolidated).toBe(4);
     expect(r.details.takes_written).toBe(1);
 
@@ -117,6 +143,20 @@ describe('runPhaseConsolidate', () => {
     expect(takes[0].kind).toBe('fact');
     expect(takes[0].holder).toBe('self');
     expect(takes[0].weight).toBeCloseTo(0.9, 2);
+    const pageBody = await Bun.file(
+      join(brainDir, 'people/alice-example.md'),
+    ).text();
+    const fenced = parseTakesFence(pageBody);
+    expect(fenced.warnings).toEqual([]);
+    expect(fenced.takes).toEqual([
+      expect.objectContaining({
+        rowNum: 1,
+        claim: expect.stringMatching(/^alice fact [0-3]$/),
+        kind: 'fact',
+        holder: 'self',
+        weight: 0.9,
+      }),
+    ]);
 
     // Facts marked consolidated, NEVER deleted.
     const facts = await engine.executeRaw<{ id: number; consolidated_at: Date | null; consolidated_into: number | null }>(
@@ -138,7 +178,7 @@ describe('runPhaseConsolidate', () => {
         [`dryrun fact ${i}`, oldDate(), unitVec()],
       );
     }
-    const r = await runPhaseConsolidate(engine, { dryRun: true });
+    const r = await runConsolidate({ dryRun: true });
     expect(r.details.dryRun).toBe(true);
     expect(r.details.facts_consolidated).toBe(3);
     expect(r.details.takes_written).toBe(1);
@@ -164,7 +204,7 @@ describe('runPhaseConsolidate', () => {
       );
     }
 
-    const result = await runPhaseConsolidate(engine, {});
+    const result = await runConsolidate();
 
     expect(result.details.facts_consolidated).toBe(3);
     const takes = await engine.executeRaw<{ page_id: number }>(
@@ -190,10 +230,34 @@ describe('runPhaseConsolidate', () => {
         [`orphan fact ${i}`, oldDate(), unitVec()],
       );
     }
-    const r = await runPhaseConsolidate(engine, {});
+    const r = await runConsolidate();
     // Bucket processed (passes count + age gates) but cluster skipped (no page).
     expect(r.details.buckets_processed).toBeGreaterThanOrEqual(1);
     expect(r.details.facts_consolidated).toBe(0);
     expect(r.details.takes_written).toBe(0);
+  });
+
+  test('no local checkout skips promotion instead of creating a DB-only take', async () => {
+    await seedPage('people/no-checkout');
+    for (let i = 0; i < 3; i++) {
+      await engine.executeRaw(
+        `INSERT INTO facts (source_id, entity_slug, fact, kind, source, valid_from, embedding, embedded_at)
+         VALUES ('default', 'people/no-checkout', $1, 'fact', 'test', $2::timestamptz, $3::vector, $2::timestamptz)`,
+        [`no checkout ${i}`, oldDate(), unitVec()],
+      );
+    }
+
+    const result = await runPhaseConsolidate(engine, {
+      brainDir: null,
+      sourceId: 'default',
+    });
+
+    expect(result.details.takes_written).toBe(0);
+    expect(result.details.takes_skipped_no_markdown).toBe(1);
+    expect(await engine.executeRaw(`SELECT id FROM takes`)).toEqual([]);
+    const facts = await engine.executeRaw<{ consolidated_at: Date | null }>(
+      `SELECT consolidated_at FROM facts`,
+    );
+    expect(facts.every(f => f.consolidated_at === null)).toBe(true);
   });
 });
