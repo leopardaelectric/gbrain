@@ -96,6 +96,29 @@ describe('countUnconsolidatedFacts', () => {
     expect(await engine.countUnconsolidatedFacts('default')).toBe(0);
   });
 
+  test('ignores audit receipts and other facts with no entity', async () => {
+    await engine.insertFact(
+      {
+        fact: 'EXTRACTION_COMPLETE',
+        kind: 'fact',
+        entity_slug: null,
+        source: 'extract-conversation-facts:terminal',
+      },
+      { source_id: 'default' },
+    );
+    await engine.insertFact(
+      {
+        fact: 'semantic fact awaiting consolidation',
+        kind: 'fact',
+        entity_slug: 'projects/gbrain',
+        source: 'unit',
+      },
+      { source_id: 'default' },
+    );
+
+    expect(await engine.countUnconsolidatedFacts('default')).toBe(1);
+  });
+
   test('source-scoped (does not count other sources)', async () => {
     await engine.insertFact(
       { fact: 'in default', kind: 'fact', entity_slug: 'e/d', source: 'unit' },
