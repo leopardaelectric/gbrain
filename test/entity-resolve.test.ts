@@ -42,6 +42,16 @@ beforeAll(async () => {
     { slug: 'companies/stripe', title: 'Stripe', type: 'company' },
     { slug: 'companies/stripe-atlas', title: 'Stripe Atlas', type: 'company' },
     { slug: 'companies/benton-capital', title: 'Benton Capital', type: 'company' },
+    {
+      slug: 'default/sources/github/repo-brain/example/fw-ble-detector/readme',
+      title: 'README',
+      type: 'source',
+    },
+    {
+      slug: 'default/sources/github/repo-brain/example/ms-maestro-scheduler/readme',
+      title: 'README',
+      type: 'source',
+    },
   ];
 
   for (const p of pages) {
@@ -247,6 +257,30 @@ describe('resolveEntitySlugWithSource — fuzzy_match branch', () => {
       'Alice',
     );
     expect(result!.slug).toBe('people/alice-example');
+    expect(result!.source).toBe<ResolutionSource>('fuzzy_match');
+  });
+
+  it('resolves a repository name to its canonical readme page', async () => {
+    const result = await resolveEntitySlugWithSource(
+      engine as unknown as BrainEngine,
+      'default',
+      'fw-ble-detector',
+    );
+    expect(result!.slug).toBe(
+      'default/sources/github/repo-brain/example/fw-ble-detector/readme',
+    );
+    expect(result!.source).toBe<ResolutionSource>('fuzzy_match');
+  });
+
+  it('normalizes deployment wrappers before resolving a canonical repository page', async () => {
+    const result = await resolveEntitySlugWithSource(
+      engine as unknown as BrainEngine,
+      'default',
+      'ms-ms-maestro-scheduler-prod',
+    );
+    expect(result!.slug).toBe(
+      'default/sources/github/repo-brain/example/ms-maestro-scheduler/readme',
+    );
     expect(result!.source).toBe<ResolutionSource>('fuzzy_match');
   });
 });

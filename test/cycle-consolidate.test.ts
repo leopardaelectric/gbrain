@@ -152,6 +152,35 @@ describe('runPhaseConsolidate', () => {
     }
   });
 
+  test('migrates a resolvable legacy entity bucket to its canonical page', async () => {
+    const canonicalSlug =
+      'default/sources/github/repo-brain/example/fw-ble-detector/readme';
+    const pageId = await seedPage(canonicalSlug);
+    for (let i = 0; i < 3; i++) {
+      await engine.executeRaw(
+        `INSERT INTO facts (source_id, entity_slug, fact, kind, source, valid_from, embedding, embedded_at)
+         VALUES ('default', 'fw-ble-detector', $1, 'fact', 'test', $2::timestamptz, $3::vector, $2::timestamptz)`,
+        [`legacy detector fact ${i}`, oldDate(), unitVec()],
+      );
+    }
+
+    const result = await runPhaseConsolidate(engine, {});
+
+    expect(result.details.facts_consolidated).toBe(3);
+    const takes = await engine.executeRaw<{ page_id: number }>(
+      `SELECT page_id FROM takes`,
+    );
+    expect(takes).toEqual([{ page_id: pageId }]);
+    const facts = await engine.executeRaw<{ entity_slug: string }>(
+      `SELECT entity_slug FROM facts ORDER BY id`,
+    );
+    expect(facts.map(fact => fact.entity_slug)).toEqual([
+      canonicalSlug,
+      canonicalSlug,
+      canonicalSlug,
+    ]);
+  });
+
   test('skips bucket when no matching page exists in source', async () => {
     // Don't seed a page — entity_slug 'no-page' won't resolve.
     for (let i = 0; i < 4; i++) {

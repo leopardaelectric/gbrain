@@ -55,7 +55,13 @@ export async function resolveEntitySlug(
     if (exact) return exact;
   }
 
-  // 2. Prefix-expansion match: when the input looks like a bare first name
+  // 2. Structured path match. Imported repository/project pages commonly
+  // live below a long source prefix and carry an unhelpful title such as
+  // "README". Resolve an exact path segment before generic fuzzy scoring.
+  const structured = await tryStructuredPathMatch(engine, source_id, trimmed);
+  if (structured) return structured;
+
+  // 3. Prefix-expansion match: when the input looks like a bare first name
   //    (no slash, no prefix, slugifies to a single short token), try
   //    `people/<token>-%` then `companies/<token>-%`. Short bare names
   //    score terribly on pg_trgm — similarity('alice', 'alice-example')
@@ -73,7 +79,7 @@ export async function resolveEntitySlug(
     if (fuzzy) return fuzzy;
   }
 
-  // 4. Fallback: deterministic slugify.
+  // 4. Fallback: deterministic slugify while preserving path separators.
   return fallbackSlugify(trimmed);
 }
 
@@ -147,6 +153,9 @@ export async function resolveEntitySlugWithSource(
     const exact = await tryExactSlug(engine, source_id, trimmed);
     if (exact) return { slug: exact, source: 'exact_page' };
   }
+
+  const structured = await tryStructuredPathMatch(engine, source_id, trimmed);
+  if (structured) return { slug: structured, source: 'fuzzy_match' };
 
   if (isBareName(trimmed)) {
     const expanded = await tryUnambiguousPrefixExpansion(engine, source_id, slugify(trimmed));
@@ -353,6 +362,69 @@ async function tryExactSlug(
     if (rows.length > 0) return rows[0].slug;
   } catch {
     // Defensive: fail open. Caller still gets a slug from the fallback.
+  }
+  return null;
+}
+
+function structuredTokenVariants(raw: string): string[] {
+  const initial = slugify(raw);
+  if (!initial) return [];
+
+  const variants = new Set<string>([initial]);
+  const withoutEnvironment = initial.replace(
+    /-(?:prod|production|staging|stage|dev|development)$/,
+    '',
+  );
+  if (withoutEnvironment) variants.add(withoutEnvironment);
+
+  for (const variant of [...variants]) {
+    const duplicatedPrefix = variant.match(/^([a-z0-9]+)-\1-(.+)$/);
+    if (duplicatedPrefix) {
+      variants.add(`${duplicatedPrefix[1]}-${duplicatedPrefix[2]}`);
+    }
+  }
+  return [...variants];
+}
+
+/**
+ * Resolve a free-form service/repository name to a canonical page below a
+ * source-owned path. The match is deliberately stricter than pg_trgm:
+ *
+ * - the normalized token must be a complete slash-delimited path segment;
+ * - the page must be a canonical leaf (`readme`, `index`, or the token);
+ * - exactly one canonical candidate may exist.
+ *
+ * This avoids mapping a service name to an arbitrary learning/report page
+ * merely because that page mentions the token in its slug.
+ */
+async function tryStructuredPathMatch(
+  engine: BrainEngine,
+  source_id: string,
+  raw: string,
+): Promise<string | null> {
+  for (const token of structuredTokenVariants(raw)) {
+    try {
+      const rows = await engine.executeRaw<{ slug: string }>(
+        `SELECT slug
+         FROM pages
+         WHERE source_id = $1
+           AND deleted_at IS NULL
+           AND slug ILIKE '%' || $2 || '%'
+         ORDER BY slug ASC
+         LIMIT 100`,
+        [source_id, token],
+      );
+      const canonical = rows.filter(({ slug }) => {
+        const segments = slug.split('/').filter(Boolean);
+        if (!segments.includes(token)) return false;
+        const leaf = segments.at(-1);
+        return leaf === token || leaf === 'readme' || leaf === 'index';
+      });
+      if (canonical.length === 1) return canonical[0].slug;
+    } catch {
+      // Defensive: source engines without ILIKE support keep the existing
+      // fuzzy/prefix/fallback chain.
+    }
   }
   return null;
 }
