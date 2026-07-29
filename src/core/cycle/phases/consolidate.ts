@@ -25,6 +25,7 @@
 import type { BrainEngine, FactRow } from '../../engine.ts';
 import type { PhaseResult } from '../../cycle.ts';
 import { cosineSimilarity } from '../../facts/classify.ts';
+import { resolveEntitySlugWithSource } from '../../entities/resolve.ts';
 
 export interface ConsolidatePhaseOpts {
   dryRun?: boolean;
@@ -51,6 +52,7 @@ export async function runPhaseConsolidate(
   let takesWritten = 0;
   let bucketsProcessed = 0;
   let bucketsSkipped = 0;
+  let bucketsCanonicalized = 0;
 
   // Pull every (source_id, entity_slug) bucket of unconsolidated facts.
   // Uses the partial idx_facts_unconsolidated index.
@@ -110,12 +112,42 @@ export async function runPhaseConsolidate(
     bucketsProcessed += 1;
     const clusters = clusterFacts(unconsolidated, threshold);
 
-    // Resolve entity_slug → page_id. If page missing in this source, skip.
-    const pageRows = await engine.executeRaw<{ id: number }>(
+    // Resolve entity_slug → page_id. Legacy fallback slugs may predate a
+    // canonical project/repository page or the structured-path resolver.
+    // Re-resolve those buckets conservatively before giving up.
+    let canonicalSlug = b.entity_slug;
+    let pageRows = await engine.executeRaw<{ id: number }>(
       `SELECT id FROM pages WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL LIMIT 1`,
-      [b.source_id, b.entity_slug],
+      [b.source_id, canonicalSlug],
     );
-    if (pageRows.length === 0) continue;
+    if (pageRows.length === 0) {
+      const resolved = await resolveEntitySlugWithSource(
+        engine,
+        b.source_id,
+        b.entity_slug,
+      );
+      if (!resolved || resolved.source === 'fallback_slugify') continue;
+
+      canonicalSlug = resolved.slug;
+      pageRows = await engine.executeRaw<{ id: number }>(
+        `SELECT id FROM pages WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL LIMIT 1`,
+        [b.source_id, canonicalSlug],
+      );
+      if (pageRows.length === 0) continue;
+
+      bucketsCanonicalized += 1;
+      if (!dryRun && canonicalSlug !== b.entity_slug) {
+        await engine.executeRaw(
+          `UPDATE facts
+             SET entity_slug = $1
+           WHERE source_id = $2
+             AND entity_slug = $3
+             AND consolidated_at IS NULL
+             AND expired_at IS NULL`,
+          [canonicalSlug, b.source_id, b.entity_slug],
+        );
+      }
+    }
     const pageId = pageRows[0].id;
 
     // Existing row_num max for this page → start appending after it.
@@ -252,6 +284,7 @@ export async function runPhaseConsolidate(
       takes_written: takesWritten,
       buckets_processed: bucketsProcessed,
       buckets_skipped: bucketsSkipped,
+      buckets_canonicalized: bucketsCanonicalized,
     },
   };
 }
