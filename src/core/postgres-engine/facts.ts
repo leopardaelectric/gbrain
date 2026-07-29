@@ -325,6 +325,7 @@ export async function countUnconsolidatedFacts(deps: PgFactsDeps, source_id: str
       WHERE source_id = ${source_id}
         AND consolidated_at IS NULL
         AND expired_at IS NULL
+        AND entity_slug IS NOT NULL
     `;
     return Number(rows[0]?.count ?? 0);
   }
