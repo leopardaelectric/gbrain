@@ -3671,7 +3671,10 @@ export class PGLiteEngine implements BrainEngine {
   async countUnconsolidatedFacts(source_id: string): Promise<number> {
     const r = await this.db.query<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM facts
-       WHERE source_id = $1 AND consolidated_at IS NULL AND expired_at IS NULL`,
+       WHERE source_id = $1
+         AND consolidated_at IS NULL
+         AND expired_at IS NULL
+         AND entity_slug IS NOT NULL`,
       [source_id],
     );
     return Number(r.rows[0]?.count ?? 0);

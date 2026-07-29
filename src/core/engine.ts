@@ -1718,8 +1718,9 @@ export interface BrainEngine {
 
   /**
    * v0.32: count facts that haven't been promoted to takes by the consolidate
-   * phase yet (active + unconsolidated). Drives `gbrain recall --pending`.
-   * Single SQL: COUNT(*) WHERE consolidated_at IS NULL AND expired_at IS NULL.
+   * phase yet (active + unconsolidated + entity-addressable). Drives
+   * `gbrain recall --pending`. Rows without an entity are durable audit
+   * receipts, not candidates for the consolidator's entity buckets.
    */
   countUnconsolidatedFacts(source_id: string): Promise<number>;
 
