@@ -394,7 +394,7 @@ export async function addTakeToPage(
     writePageBody(path, nextBody, writeRoot);
     let mirrorWarning: string | undefined;
     try {
-      await target.engine.addTakesBatch([{
+      await target.engine.addTakesBatch([{ // gbrain-allow-direct-insert: takes add mirrors only after the canonical Markdown fence write
         page_id: pageId, row_num: rowNum, claim: input.claim, kind: input.kind,
         holder: input.holder, weight: input.weight ?? 0.5,
         since_date: input.sinceDate, source: input.source,

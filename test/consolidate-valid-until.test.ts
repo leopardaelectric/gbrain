@@ -13,13 +13,18 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runPhaseConsolidate } from '../src/core/cycle/phases/consolidate.ts';
 import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 
 let engine: PGLiteEngine;
+let brainDir: string;
 
 beforeAll(async () => {
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-consolidate-valid-until-'));
   // v0.36.2.0: DEFAULT_EMBEDDING_DIMENSIONS flipped to 1280 (ZE Matryoshka).
   // This test inserts 1536-dim unit vectors (line ~38). If another test file
   // in the shard configured the gateway before us, initSchema() would size
@@ -40,12 +45,15 @@ beforeAll(async () => {
 afterAll(async () => {
   await engine.disconnect();
   resetGateway();
+  rmSync(brainDir, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
   await engine.executeRaw(`DELETE FROM facts`);
   await engine.executeRaw(`DELETE FROM takes`);
   await engine.executeRaw(`DELETE FROM pages WHERE slug LIKE 'cdx4-%'`);
+  rmSync(brainDir, { recursive: true, force: true });
+  mkdirSync(brainDir, { recursive: true });
 });
 
 function unitVec(): string {
@@ -63,7 +71,18 @@ async function seedPage(slug: string): Promise<number> {
     `SELECT id FROM pages WHERE slug = $1 AND source_id = 'default'`,
     [slug],
   );
+  writeFileSync(
+    join(brainDir, `${slug}.md`),
+    `---\ntype: company\ntitle: Test\nslug: ${slug}\n---\n\n# Test\n`,
+  );
   return r[0].id;
+}
+
+function runConsolidate() {
+  return runPhaseConsolidate(engine, {
+    brainDir,
+    sourceId: 'default',
+  });
 }
 
 async function insertFact(args: {
@@ -106,7 +125,7 @@ describe('R4a — chronological valid_until writeback', () => {
       valid_from: newest,
     });
 
-    const r = await runPhaseConsolidate(engine, {});
+    const r = await runConsolidate();
     expect(r.details.facts_consolidated).toBe(3);
     expect(r.details.takes_written).toBe(1);
 
@@ -134,7 +153,7 @@ describe('R4a — chronological valid_until writeback', () => {
     const idB = await insertFact({ entity_slug: 'cdx4-acme-sameday', text: 'same day', valid_from: sameDay });
     const idC = await insertFact({ entity_slug: 'cdx4-acme-sameday', text: 'same day', valid_from: sameDay });
 
-    await runPhaseConsolidate(engine, {});
+    await runConsolidate();
 
     // All three valid_from values are equal; the (id ASC) tiebreaker
     // makes the lowest-id row the "oldest" chronologically. Pin that
@@ -168,7 +187,7 @@ describe('R4b / R7 — cycle idempotency: re-run consolidate produces zero new t
     }
 
     // First run: 1 take, 4 facts consolidated.
-    const r1 = await runPhaseConsolidate(engine, {});
+    const r1 = await runConsolidate();
     expect(r1.details.takes_written).toBe(1);
     const countAfter1 = await engine.executeRaw<{ n: string }>(
       `SELECT COUNT(*)::text AS n FROM takes WHERE page_id = (SELECT id FROM pages WHERE slug = 'cdx4-idempo-1')`,
@@ -186,7 +205,7 @@ describe('R4b / R7 — cycle idempotency: re-run consolidate produces zero new t
     );
 
     // Second run: must NOT append another take.
-    const r2 = await runPhaseConsolidate(engine, {});
+    const r2 = await runConsolidate();
     expect(r2.details.facts_consolidated).toBe(4);
     // takes_written reports the NEW takes inserted this run; on the upsert
     // hit path it's 0 (no new INSERT) but facts still get marked consolidated.
@@ -213,7 +232,7 @@ describe('R4b / R7 — cycle idempotency: re-run consolidate produces zero new t
     await insertFact({ entity_slug: 'cdx4-idempo-2', text: 'iterable', valid_from: t2 });
     await insertFact({ entity_slug: 'cdx4-idempo-2', text: 'iterable', valid_from: t3 });
 
-    await runPhaseConsolidate(engine, {});
+    await runConsolidate();
     const before = await engine.executeRaw<{ id: number; valid_until: Date | null }>(
       `SELECT id, valid_until FROM facts WHERE entity_slug = 'cdx4-idempo-2' ORDER BY valid_from ASC`,
     );
@@ -224,7 +243,7 @@ describe('R4b / R7 — cycle idempotency: re-run consolidate produces zero new t
        WHERE entity_slug = 'cdx4-idempo-2'`,
     );
 
-    await runPhaseConsolidate(engine, {});
+    await runConsolidate();
     const after = await engine.executeRaw<{ id: number; valid_until: Date | null }>(
       `SELECT id, valid_until FROM facts WHERE entity_slug = 'cdx4-idempo-2' ORDER BY valid_from ASC`,
     );

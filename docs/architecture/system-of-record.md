@@ -60,6 +60,11 @@ from the markdown contract.
 | **emotional_weight** | Recomputed from takes + tags | `pages.emotional_weight` (signal column) | `recompute_emotional_weight` cycle phase |
 | **synthesis_evidence** | FK into `takes` rows (`slug#N`) inside synthesis pages | `synthesis_evidence` | `extract takes` (transitively) |
 
+Dream consolidation and `takes extract --from-pages` are also
+Markdown-first writers. They acquire the per-page lock, atomically update the
+fenced table, validate it, and only then mirror the exact row into `takes`.
+If a source has no local checkout, they do not create DB-only takes.
+
 ### Derived from FS but not user-authored
 
 These hold derived state that's automatically reconstructible from the

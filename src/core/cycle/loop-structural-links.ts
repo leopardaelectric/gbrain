@@ -80,7 +80,7 @@ export async function materializeLoopStructuralLinks(
   const pages = await engine.listPages({ slugPrefix: 'loops/', limit: 100000 });
   const links = buildLoopStructuralLinksFromPages(pages);
   const linksCreated = links.length > 0
-    ? await engine.addLinksBatch(links, { auditSite: 'loopStructuralLinks' })
+    ? await engine.addLinksBatch(links, { auditSite: 'addLinksBatch' }) // gbrain-allow-direct-insert: deterministic structural-link reconciler derived entirely from loop Markdown pages
     : 0;
   return {
     links_created: linksCreated,
