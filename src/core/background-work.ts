@@ -101,7 +101,7 @@ export function __listDrainerNamesForTest(): string[] {
  * the subsequent disconnect.
  */
 export async function drainAllBackgroundWorkForCliExit(opts?: { timeoutMs?: number }): Promise<void> {
-  const timeoutMs = opts?.timeoutMs ?? 2000;
+  const timeoutMs = opts?.timeoutMs ?? 8000;
   const ordered = [...drainers.values()].sort(
     (a, b) => a.order - b.order || a.name.localeCompare(b.name),
   );

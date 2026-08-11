@@ -12,6 +12,7 @@ import type { PaceKeyOverrides } from '../core/pace-mode.ts';
 import { loadConfig, isThinClient } from '../core/config.ts';
 import { callRemoteTool, unpackToolResult } from '../core/mcp-client.ts';
 import { parseNiceValue, applyNiceness, getEffectiveNiceness, formatNice } from '../core/minions/niceness.ts';
+import { AUTOPILOT_PHASES } from './autopilot-fanout.ts';
 
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -1615,7 +1616,42 @@ export async function registerBuiltinHandlers(
       // `gbrain extract-conversation-facts --background --workers 20`
       // works end-to-end.
       workers: typeof job.data.workers === 'number' ? job.data.workers : undefined,
+      pageCursor: job.data.pageCursor && typeof job.data.pageCursor === 'object'
+        ? {
+            typeIndex: typeof (job.data.pageCursor as { typeIndex?: unknown }).typeIndex === 'number'
+              ? (job.data.pageCursor as { typeIndex: number }).typeIndex
+              : 0,
+            offset: typeof (job.data.pageCursor as { offset?: unknown }).offset === 'number'
+              ? (job.data.pageCursor as { offset: number }).offset
+              : 0,
+          }
+        : undefined,
     });
+
+    const autoContinue = job.data.autoContinue === true;
+    const nextCursor = result.next_cursor ?? null;
+    const shouldContinue =
+      autoContinue &&
+      nextCursor != null &&
+      !result.budget_exhausted &&
+      job.data.slug == null &&
+      !job.data.dryRun;
+    if (shouldContinue) {
+      const { MinionQueue } = await import('../core/minions/queue.ts');
+      const queue = new MinionQueue(engine);
+      const nextParams = {
+        ...job.data,
+        pageCursor: nextCursor,
+        sliceNonce: `slice:${job.id}`,
+      };
+      await queue.add(
+        'extract-conversation-facts',
+        nextParams,
+        {
+          idempotency_key: `extract-conversation-facts:${sourceId}:slice:${nextCursor.typeIndex}:${nextCursor.offset}:${job.id}`,
+        },
+      );
+    }
     return result;
   });
 
@@ -1877,7 +1913,7 @@ export async function registerBuiltinHandlers(
     const validPhases = new Set(ALL_PHASES);
     const requestedPhases = Array.isArray(job.data.phases)
       ? (job.data.phases as string[]).filter(p => validPhases.has(p as any))
-      : undefined;
+      : AUTOPILOT_PHASES;
 
     const pull = resolveJobPull(job.data);
 

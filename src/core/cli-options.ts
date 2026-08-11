@@ -375,11 +375,15 @@ export async function maybeBackground(opts: MaybeBackgroundOpts): Promise<boolea
   try {
     const { MinionQueue } = await import('./minions/queue.ts');
     const queue = new MinionQueue(opts.engine);
-    const job = await queue.add(opts.jobName, params, {
+    let job = await queue.add(opts.jobName, params, {
       queue: 'default',
       idempotency_key,
       max_attempts: 2,
     });
+    if (job.status === 'dead' || job.status === 'failed') {
+      const retried = await queue.retryJob(job.id);
+      if (retried) job = retried;
+    }
     process.stdout.write(`job_id=${job.id}\n`);
 
     if (follow) {

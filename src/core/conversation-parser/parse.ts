@@ -76,6 +76,11 @@ const SCORING_HEAD_TRIGGER_THRESHOLD = 0.3;
  */
 const SCORING_MIN_ACCEPTANCE = 0.05;
 
+const SLACK_ARCHIVE_BLOCK_ID = 'slack-archive-block';
+const SLACK_ARCHIVE_HEADING_RX =
+  /^##\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s*$/;
+const SLACK_ARCHIVE_USER_DISPLAY_RX = /^user_display:\s*(.+?)\s*$/;
+
 /**
  * Tie-breaker priority: lower index wins on score tie. Mirrors
  * BUILTIN_PATTERNS declaration order. User-declared patterns get
@@ -84,6 +89,56 @@ const SCORING_MIN_ACCEPTANCE = 0.05;
 function priorityOf(id: string): number {
   const idx = BUILTIN_PATTERNS.findIndex((p) => p.id === id);
   return idx >= 0 ? idx : Infinity;
+}
+
+function parseSlackArchiveBlocks(body: string): MatchedMessage[] {
+  if (!body.includes('slack_ts:') || !body.includes('user_display:')) {
+    return [];
+  }
+
+  const lines = body.split(/\r?\n/);
+  const messages: MatchedMessage[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const heading = SLACK_ARCHIVE_HEADING_RX.exec(lines[i].trim());
+    if (!heading) continue;
+
+    let next = i + 1;
+    while (next < lines.length && !SLACK_ARCHIVE_HEADING_RX.test(lines[next].trim())) {
+      next++;
+    }
+
+    let speaker = '';
+    let displayIdx = -1;
+    for (let j = i + 1; j < next; j++) {
+      const display = SLACK_ARCHIVE_USER_DISPLAY_RX.exec(lines[j].trim());
+      if (display) {
+        speaker = display[1].trim();
+        displayIdx = j;
+        break;
+      }
+    }
+    if (!speaker || displayIdx < 0) continue;
+
+    let bodyStart = displayIdx + 1;
+    while (bodyStart < next && lines[bodyStart].trim() !== '') {
+      bodyStart++;
+    }
+    if (bodyStart < next && lines[bodyStart].trim() === '') {
+      bodyStart++;
+    }
+
+    const text = lines.slice(bodyStart, next).join('\n').trim();
+    if (!text) continue;
+
+    messages.push({
+      speaker,
+      timestamp: heading[1],
+      text,
+    });
+  }
+
+  return messages;
 }
 
 /**
@@ -481,6 +536,23 @@ export function parseConversation(
   body = normalizeBlockConversation(body);
 
   const dateCtx = deriveDateContext(opts);
+
+  if (!(opts.disabledBuiltinIds ?? []).includes(SLACK_ARCHIVE_BLOCK_ID)) {
+    const slackArchiveMessages = parseSlackArchiveBlocks(body);
+    if (slackArchiveMessages.length > 0) {
+      return {
+        messages: slackArchiveMessages,
+        phase: 'regex_match',
+        matched_pattern_id: SLACK_ARCHIVE_BLOCK_ID,
+        patterns_scored: BUILTIN_PATTERNS.length + 1,
+        unmatched_line_count: opts.diagnostic
+          ? body
+              .split(/\r?\n/)
+              .filter((l) => l.trim().length > 0).length - slackArchiveMessages.length
+          : undefined,
+      };
+    }
+  }
 
   // Assemble candidate pool: built-ins (minus disabled) + user patterns.
   const disabledSet = new Set(opts.disabledBuiltinIds ?? []);

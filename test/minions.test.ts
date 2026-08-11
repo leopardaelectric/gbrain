@@ -350,7 +350,7 @@ describe('MinionQueue: #1737 per-handler default timeout', () => {
     const cycle = await queue.add('autopilot-cycle', {});
     // subagent is a protected name → needs the trusted-submit flag (4th arg).
     const sub = await queue.add('subagent', {}, undefined, { allowProtectedSubmit: true });
-    expect(cycle.timeout_ms).toBe(30 * 60 * 1000);
+    expect(cycle.timeout_ms).toBe(90 * 60 * 1000);
     expect(sub.timeout_ms).toBe(30 * 60 * 1000);
   });
 
@@ -368,6 +368,11 @@ describe('MinionQueue: #1737 per-handler default timeout', () => {
       allowProtectedSubmit: true,
     });
     expect(job.timeout_ms).toBe(60 * 60 * 1000);
+  });
+
+  test('extract-conversation-facts gets the long default so backfills do not die early', async () => {
+    const job = await queue.add('extract-conversation-facts', { sourceId: 'mind-agent-brain' });
+    expect(job.timeout_ms).toBe(30 * 60 * 1000);
   });
 
   test('explicit timeout_ms always wins over the default', async () => {

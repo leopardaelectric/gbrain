@@ -524,6 +524,40 @@ describe('runExtractConversationFactsCore', () => {
     expect(Number(rows[0]?.count ?? 0)).toBe(0);
   });
 
+  test('calls the in-phase keepalive after processing a page', async () => {
+    let keepalives = 0;
+    await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/imessage/alice-example',
+      dryRun: true,
+      sleepMs: 0,
+      yieldDuringPhase: async () => { keepalives++; },
+    });
+
+    expect(keepalives).toBe(1);
+  });
+
+  test('throttles the in-phase keepalive across fast page batches', async () => {
+    await engine.putPage('conversations/imessage/bob-demo', {
+      type: 'conversation',
+      title: 'iMessage: Bob Demo',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: {},
+    });
+    let keepalives = 0;
+
+    await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      dryRun: true,
+      sleepMs: 0,
+      limit: 2,
+      yieldDuringPhase: async () => { keepalives++; },
+    });
+
+    expect(keepalives).toBe(1);
+  });
+
   test('non-conversation pages are skipped', async () => {
     const result = await runExtractConversationFactsCore(engine, {
       sourceId: 'default',
@@ -1077,7 +1111,7 @@ describe('runExtractConversationFactsCore', () => {
         types: ['conversation'],
         sleepMs: 0,
       });
-      expect(result.pages_failed).toBe(1);
+      expect(result.pages_failed).toBe(3);
       expect(result.pages_processed).toBe(0);
     } finally {
       engineAny.insertFacts = originalInsertFacts;
@@ -1122,7 +1156,7 @@ describe('runExtractConversationFactsCore', () => {
     expect(Number(markers[0]?.count ?? 0)).toBe(0);
   });
 
-  test('--limit counts pending work after completed pages are filtered', async () => {
+  test('--limit prioritizes pending work without spending a slot on completed pages', async () => {
     for (const slug of ['conversations/a-complete', 'conversations/b-pending']) {
       await engine.putPage(slug, {
         type: 'slack',
@@ -1144,7 +1178,7 @@ describe('runExtractConversationFactsCore', () => {
       limit: 1,
       sleepMs: 0,
     });
-    expect(bulk.pages_skipped_completed).toBe(1);
+    expect(bulk.pages_skipped_completed).toBe(0);
     expect(bulk.pages_processed).toBe(1);
     const pendingTerminal = await engine.executeRaw<{ count: string | number }>(
       `SELECT COUNT(*) AS count FROM facts
@@ -1306,6 +1340,122 @@ describe('runExtractConversationFactsCore', () => {
     });
     expect(third.pages_processed).toBe(1);
     expect(third.segments_processed).toBeGreaterThanOrEqual(1);
+  });
+
+  test('multi-page limited runs prioritize pages missing terminal audit rows', async () => {
+    await engine.executeRaw(`DELETE FROM facts WHERE source LIKE 'cli:extract-conversation-facts%'`);
+    await engine.executeRaw(`DELETE FROM op_checkpoints WHERE op = 'extract-conversation-facts'`);
+    await engine.executeRaw(`DELETE FROM pages WHERE slug LIKE 'conversations/%'`);
+
+    await engine.putPage('conversations/imessage/backlog-target', {
+      type: 'conversation',
+      title: 'Backlog target',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: {},
+    });
+    await engine.putPage('conversations/imessage/already-done', {
+      type: 'conversation',
+      title: 'Already done and newer',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: {},
+    });
+
+    const done = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/imessage/already-done',
+      sleepMs: 0,
+    });
+    expect(done.pages_processed).toBe(1);
+
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      limit: 1,
+      sleepMs: 0,
+    });
+
+    expect(result.pages_considered).toBe(1);
+    expect(result.pages_processed).toBe(1);
+
+    const backlogTerminalRows = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM facts WHERE source = $1 AND source_markdown_slug = $2`,
+      [TERMINAL_AUDIT_SOURCE, 'conversations/imessage/backlog-target'],
+    );
+    expect(Number(backlogTerminalRows[0]?.count ?? 0)).toBe(1);
+  });
+
+  test('limited backlog pass safely replays checkpointed pages missing a terminal row', async () => {
+    await engine.executeRaw(`DELETE FROM facts WHERE source LIKE 'cli:extract-conversation-facts%'`);
+    await engine.executeRaw(`DELETE FROM op_checkpoints WHERE op = 'extract-conversation-facts'`);
+    await engine.executeRaw(`DELETE FROM pages WHERE slug LIKE 'conversations/%'`);
+
+    await engine.putPage('conversations/imessage/checkpoint-only', {
+      type: 'conversation',
+      title: 'Checkpoint only',
+      compiled_truth: SAMPLE_BODY,
+      timeline: '',
+      frontmatter: {},
+    });
+
+    const first = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/imessage/checkpoint-only',
+      sleepMs: 0,
+    });
+    expect(first.pages_processed).toBe(1);
+
+    await engine.executeRaw(
+      `DELETE FROM facts WHERE source = $1 AND source_markdown_slug = $2`,
+      [TERMINAL_AUDIT_SOURCE, 'conversations/imessage/checkpoint-only'],
+    );
+
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      limit: 1,
+      sleepMs: 0,
+    });
+
+    expect(result.pages_considered).toBe(1);
+    expect(result.pages_processed).toBe(1);
+    expect(result.pages_skipped).toBe(0);
+
+    const terminalRows = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM facts WHERE source = $1 AND source_markdown_slug = $2`,
+      [TERMINAL_AUDIT_SOURCE, 'conversations/imessage/checkpoint-only'],
+    );
+    expect(Number(terminalRows[0]?.count ?? 0)).toBe(1);
+  });
+
+  test('limited backlog pass writes terminal row for pages with no extractable segments', async () => {
+    await engine.executeRaw(`DELETE FROM facts WHERE source LIKE 'cli:extract-conversation-facts%'`);
+    await engine.executeRaw(`DELETE FROM op_checkpoints WHERE op = 'extract-conversation-facts'`);
+    await engine.executeRaw(`DELETE FROM pages WHERE slug LIKE 'conversations/%'`);
+
+    await engine.putPage('conversations/imessage/one-message', {
+      type: 'conversation',
+      title: 'One message',
+      compiled_truth: fmt('Alice Example', '2024-03-15', '9:00 AM', 'Single message only.'),
+      timeline: '',
+      frontmatter: {},
+    });
+
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      limit: 1,
+      sleepMs: 0,
+    });
+
+    expect(result.pages_considered).toBe(1);
+    expect(result.pages_processed).toBe(0);
+    expect(result.pages_skipped).toBe(1);
+    expect(result.facts_inserted).toBe(0);
+
+    const terminalRows = await engine.executeRaw<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM facts WHERE source = $1 AND source_markdown_slug = $2`,
+      [TERMINAL_AUDIT_SOURCE, 'conversations/imessage/one-message'],
+    );
+    expect(Number(terminalRows[0]?.count ?? 0)).toBe(1);
   });
 
   test('honors facts.extraction_enabled kill-switch (F2)', async () => {

@@ -5627,7 +5627,15 @@ export class PGLiteEngine implements BrainEngine {
     // getStats, and destructive-removal counts elsewhere deliberately stay raw.
     const { rows: [h] } = await this.db.query(`
       WITH entity_pages AS (
-        SELECT id, slug FROM pages WHERE type IN ('entity', 'person', 'company') AND deleted_at IS NULL
+        SELECT p.id, p.slug
+        FROM pages p
+        WHERE p.type IN ('entity', 'person', 'company')
+          AND p.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM tags t
+            WHERE t.page_id = p.id
+              AND t.tag IN ('bot', 'slack-user')
+          )
       )
       SELECT
         (SELECT count(*) FROM pages WHERE deleted_at IS NULL) as page_count,
@@ -5664,7 +5672,13 @@ export class PGLiteEngine implements BrainEngine {
       SELECT p.slug,
              (SELECT count(*) FROM links l WHERE l.from_page_id = p.id OR l.to_page_id = p.id)::int as link_count
       FROM pages p
-      WHERE p.type IN ('entity', 'person', 'company') AND p.deleted_at IS NULL
+      WHERE p.type IN ('entity', 'person', 'company')
+        AND p.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM tags t
+          WHERE t.page_id = p.id
+            AND t.tag IN ('bot', 'slack-user')
+        )
       ORDER BY link_count DESC
       LIMIT 5
     `);

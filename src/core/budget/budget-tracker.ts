@@ -228,6 +228,13 @@ function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
     const hit = lookupEmbeddingPrice(modelId);
     if (hit.kind === 'known') return { input: hit.pricePerMTok, output: 0 };
   }
+  // Paid chat providers share the canonical pricing table. Restrict this
+  // fallback to chat so a completion model is never silently repriced as a
+  // reranker merely because the model id exists in the cloud-chat catalog.
+  if (kind === 'chat') {
+    const canonical = canonicalLookup(modelId);
+    if (canonical) return canonical;
+  }
   // v0.40.6.1: zero-price local-inference rerank providers so the budget
   // tracker's TX2 hard-fail doesn't trip on `llama-server-reranker:<model>`
   // under `--max-cost`. Only the rerank kind — chat/embed already have

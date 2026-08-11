@@ -57,6 +57,17 @@ const FIRST_SEGMENT_EXCLUSIONS = new Set([
 
 const ROOT_DATE_SLUG = /^\d{4}-\d{2}-\d{2}(?:-.+)?$/;
 
+const STRUCTURAL_PREFIX_PATTERNS = [
+  /^([^/]+\/)?shared\/slack-conversations(?:\/|$)/,
+  /^([^/]+\/)?shared\/slack-archive(?:\/|$)/,
+  /^([^/]+\/)?people\/slack(?:\/|$)/,
+  /^([^/]+\/)?sources(?:\/|$)/,
+  /^([^/]+\/)?shared\/sops(?:\/|$)/,
+  /^([^/]+\/)?(?:extracts|loops)(?:\/|$)/,
+  /^default\/reports(?:\/|$)/,
+  /^reports\/(?:loop-run|opportunity-miner)(?:\/|$)/,
+];
+
 function isAgentWorkspaceConvention(slug: string): boolean {
   if (!slug.startsWith('agents/')) return false;
   if (slug.includes('/memory/dreaming/')) return true;
@@ -116,6 +127,10 @@ export function shouldExcludeFromOrphanReporting(
   if (ROOT_DATE_SLUG.test(slug)) return true;
 
   if (slug.startsWith('_brain-')) return true;
+
+  for (const pattern of STRUCTURAL_PREFIX_PATTERNS) {
+    if (pattern.test(slug)) return true;
+  }
 
   if (isAgentWorkspaceConvention(slug)) return true;
 

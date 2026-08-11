@@ -39,6 +39,8 @@ beforeAll(async () => {
     { slug: 'people/charlie-example', title: 'Charlie Example', type: 'person' },
     { slug: 'people/charlie-bankcroft', title: 'Charlie Bankcroft', type: 'person' },
     { slug: 'people/dave-example', title: 'Dave Example', type: 'person' },
+    { slug: 'default/people/eve-example', title: 'Eve Example', type: 'person' },
+    { slug: 'default/people/slack/frank-example', title: 'Frank Example', type: 'person' },
     { slug: 'companies/stripe', title: 'Stripe', type: 'company' },
     { slug: 'companies/stripe-atlas', title: 'Stripe Atlas', type: 'company' },
     { slug: 'companies/benton-capital', title: 'Benton Capital', type: 'company' },
@@ -137,6 +139,16 @@ describe('resolveEntitySlug — prefix expansion', () => {
   it('resolves "Dave" to people/dave-example (single match)', async () => {
     const result = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'Dave');
     expect(result).toBe('people/dave-example');
+  });
+
+  it('resolves source-rooted person slugs via prefix expansion', async () => {
+    const result = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'Eve');
+    expect(result).toBe('default/people/eve-example');
+  });
+
+  it('resolves source-rooted Slack person slugs via prefix expansion', async () => {
+    const result = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'Frank');
+    expect(result).toBe('default/people/slack/frank-example');
   });
 
   it('falls through to slugify for unknown names', async () => {
@@ -281,6 +293,16 @@ describe('resolveEntitySlugWithSource — fuzzy_match branch', () => {
     expect(result!.slug).toBe(
       'default/sources/github/repo-brain/example/ms-maestro-scheduler/readme',
     );
+    expect(result!.source).toBe<ResolutionSource>('fuzzy_match');
+  });
+
+  it('returns fuzzy_match for source-rooted person prefix expansion', async () => {
+    const result = await resolveEntitySlugWithSource(
+      engine as unknown as BrainEngine,
+      'default',
+      'Eve',
+    );
+    expect(result!.slug).toBe('default/people/eve-example');
     expect(result!.source).toBe<ResolutionSource>('fuzzy_match');
   });
 });

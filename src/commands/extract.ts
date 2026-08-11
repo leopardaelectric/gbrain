@@ -2068,7 +2068,7 @@ export async function extractMentionsFromDb(
     : null;
 
   for (const { slug, source_id } of remaining) {
-    const key = `${source_id}::${slug}`;
+    const key = `${source_id}::${slug}` as const;
     const page = candidatePagesByKey
       ? candidatePagesByKey.get(key) ?? null
       : await engine.getPage(slug, { sourceId: source_id });

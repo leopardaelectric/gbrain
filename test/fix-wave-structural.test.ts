@@ -73,7 +73,7 @@ describe('v0.36.1.x #1077 — admin register-client supports PKCE public clients
     // via `?? `, so this regex no longer requires `scopes` in the inline
     // destructure — it's separately covered by the scope-source check
     // below.
-    expect(src).toMatch(/const\s+\{\s*name,\s*(?:[^}]*?,\s*)?tokenTtl,\s*grantTypes,\s*redirectUris,\s*tokenEndpointAuthMethod\s*\}\s*=\s*req\.body/);
+    expect(src).toMatch(/const\s+\{\s*name,\s*tokenTtl,\s*grantTypes,\s*redirectUris,\s*tokenEndpointAuthMethod,\s*source,\s*federatedRead\s*\}\s*=\s*req\.body/);
     // v0.39.3.0 WARN-9: the route must still read a `scope`/`scopes` field
     // (under either name) from req.body. Pin the fallback pattern so the
     // PKCE-fix regression contract stays load-bearing.
@@ -123,9 +123,9 @@ describe('v0.36.1.x #1124 — query --no-expand actually negates expand', () => 
   });
 });
 
-describe('v0.42.20.0 — background-work registry drains every sink before disconnect', () => {
-  // Supersedes the v0.41.8.0 #1247/#1269/#1290 per-call last-retrieved drain:
-  // last-retrieved is one of four registry sinks. #2084 moved the registry
+  describe('v0.42.20.0 — background-work registry drains every sink before disconnect', () => {
+    // Supersedes the v0.41.8.0 #1247/#1269/#1290 per-call last-retrieved drain:
+    // last-retrieved is one of four registry sinks. #2084 moved the registry
   // drain out of cli.ts's inline finallys into finishCliTeardown
   // (cli-force-exit.ts), which every cli.ts teardown site routes through —
   // the drain-before-disconnect invariant is pinned there (and behaviorally
@@ -134,7 +134,7 @@ describe('v0.42.20.0 — background-work registry drains every sink before disco
     const src = readFileSync('src/core/cli-force-exit.ts', 'utf8');
     expect(src).toMatch(/import\s+\{\s*drainAllBackgroundWorkForCliExit[\s\S]*?\}\s*from\s+['"]\.\/background-work\.ts['"]/);
     expect(src).toMatch(/export async function finishCliTeardown/);
-  });
+    });
 
   test('last-retrieved.ts still exports the bounded drain + registers a drainer', () => {
     const src = readFileSync('src/core/last-retrieved.ts', 'utf8');

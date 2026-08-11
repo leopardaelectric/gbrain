@@ -20,7 +20,7 @@ import {
   AUTOPILOT_PHASES,
 } from '../src/commands/autopilot-fanout.ts';
 import type { SourceRow, BrainEngine } from '../src/core/engine.ts';
-import { ALL_PHASES } from '../src/core/cycle.ts';
+import { NON_GLOBAL_PHASES } from '../src/core/cycle.ts';
 
 function src(id: string, last_full_cycle_at?: string | null, extra: Record<string, unknown> = {}): SourceRow {
   return {
@@ -160,7 +160,7 @@ describe('resolveFanoutMax', () => {
 describe('dispatchPerSource — integration with stubbed engine + queue', () => {
   type AddedJob = { name: string; data: unknown; opts: Record<string, unknown> };
 
-  function makeStubs(sources: SourceRow[], opts?: { listThrows?: boolean }) {
+  function makeStubs(sources: SourceRow[], opts?: { listThrows?: boolean; pendingSourceIds?: string[] }) {
     const added: AddedJob[] = [];
     let nextId = 100;
     const engine = {
@@ -169,6 +169,7 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
         if (opts?.listThrows) throw new Error('sources table missing');
         return sources;
       },
+      executeRaw: async () => (opts?.pendingSourceIds ?? []).map(source_id => ({ source_id })),
     } as unknown as BrainEngine;
     const queue = {
       add: async (name: string, data: unknown, addOpts: Record<string, unknown>) => {
@@ -226,6 +227,20 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
     for (const job of added) {
       expect((job.data as Record<string, unknown>).phases).toEqual(AUTOPILOT_PHASES);
     }
+  });
+
+  test('source with a waiting or active cycle is not dispatched again in a later slot', async () => {
+    const { engine, queue, added, fanoutOpts } = makeStubs(
+      [src('alpha'), src('beta')],
+      { pendingSourceIds: ['alpha'] },
+    );
+    fanoutOpts.slot = '2026-05-22T12:05:00.000Z';
+
+    const result = await dispatchPerSource(engine, queue, fanoutOpts);
+
+    expect(result.dispatched).toEqual(['beta']);
+    expect(added).toHaveLength(1);
+    expect((added[0].data as Record<string, unknown>).source_id).toBe('beta');
   });
 
   test('pull: true only when source.config.remote_url is set', async () => {
@@ -324,8 +339,8 @@ describe('dispatchPerSource — integration with stubbed engine + queue', () => 
 });
 
 describe('AUTOPILOT_PHASES', () => {
-  test('includes every maintenance phase, including conversation_facts_backfill', () => {
-    expect(AUTOPILOT_PHASES).toEqual(ALL_PHASES);
+  test('includes every source-scoped phase, including conversation_facts_backfill', () => {
+    expect(AUTOPILOT_PHASES).toEqual(NON_GLOBAL_PHASES);
     expect(AUTOPILOT_PHASES).toContain('conversation_facts_backfill');
   });
 });

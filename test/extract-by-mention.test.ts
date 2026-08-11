@@ -246,6 +246,44 @@ describe('gbrain extract links --by-mention — integration', () => {
     expect(stdoutText).toMatch(/no linkable entity pages|nothing to scan/i);
   });
 
+  test('6. --since DATE does not fetch pages older than the cutoff', async () => {
+    await seedEntities();
+    await seedContentPage('writing/old-post', 'Acme Corp mentioned in old content.');
+    await seedContentPage('writing/new-post', 'Acme Corp mentioned in new content.');
+    await engine.executeRaw(
+      `UPDATE pages
+          SET updated_at = CASE slug
+            WHEN 'writing/old-post' THEN '2026-06-20T00:00:00Z'::timestamptz
+            WHEN 'writing/new-post' THEN '2026-06-22T00:00:00Z'::timestamptz
+            ELSE updated_at
+          END
+        WHERE slug IN ('writing/old-post', 'writing/new-post')`,
+      [],
+    );
+
+    const originalListAllPageRefs = engine.listAllPageRefs.bind(engine);
+    engine.listAllPageRefs = (async () => {
+      throw new Error('--since incremental run should use updated_at filtering, not all page refs');
+    }) as typeof engine.listAllPageRefs;
+
+    try {
+      await runCli(['links', '--by-mention', '--source', 'db', '--since', '2026-06-21T00:00:00Z']);
+    } finally {
+      engine.listAllPageRefs = originalListAllPageRefs as typeof engine.listAllPageRefs;
+    }
+
+    const rows = await engine.executeRaw<{ from_slug: string; to_slug: string }>(
+      `SELECT fp.slug AS from_slug, tp.slug AS to_slug
+         FROM links l
+         JOIN pages fp ON fp.id = l.from_page_id
+         JOIN pages tp ON tp.id = l.to_page_id
+        WHERE l.link_source = 'mentions'
+        ORDER BY fp.slug, tp.slug`,
+      [],
+    );
+    expect(rows).toEqual([{ from_slug: 'writing/new-post', to_slug: 'companies/acme' }]);
+  });
+
   test('5. --source-id scopes page WALK', async () => {
     await seedEntities(); // all in 'default'
     // Register a second source via raw SQL (PGLite engine doesn't expose a setupSource helper).

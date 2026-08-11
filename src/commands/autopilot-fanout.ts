@@ -37,6 +37,9 @@ import { sourceConfigHasRemoteUrl } from '../core/sources-load.ts';
 
 const FULL_CYCLE_FLOOR_MIN = 60;
 
+/** Compatibility alias for the source-scoped worker's default phase set. */
+export const AUTOPILOT_PHASES = NON_GLOBAL_PHASES;
+
 // #2194 fix #2: failure cooldown. A source whose autopilot-cycle keeps
 // failing/timing-out re-dispatches every tick today (only SUCCESS gates
 // dispatch), so the same handful of sources fail and re-fan-out forever — the
@@ -392,7 +395,7 @@ export async function dispatchPerSource(
     // (default source) and pre-v0.18 brains without the sources table.
     const job = await queue.add(
       'autopilot-cycle',
-      { repoPath: opts.repoPath },
+      { repoPath: opts.repoPath, phases: NON_GLOBAL_PHASES },
       {
         queue: 'default',
         idempotency_key: `autopilot-cycle:${opts.slot}`,
@@ -407,6 +410,24 @@ export async function dispatchPerSource(
       log(`[dispatch] job #${job.id} autopilot-cycle (legacy single-source)`);
     }
     return { dispatched: [], skipped_fresh: [], skipped_cap: [], skipped_cooldown: [], legacy_fallback: true };
+  }
+
+  // Avoid enqueuing another time-slotted job while the previous cycle for the
+  // same source is still waiting or active.
+  let pendingSourceIds = new Set<string>();
+  try {
+    const rows = await engine.executeRaw<{ source_id: string | null }>(
+      `SELECT DISTINCT data->>'source_id' AS source_id
+         FROM minion_jobs
+        WHERE name = 'autopilot-cycle'
+          AND status IN ('waiting', 'active')
+          AND data->>'source_id' IS NOT NULL`,
+    );
+    pendingSourceIds = new Set(rows.flatMap(row => row.source_id ? [row.source_id] : []));
+  } catch (e) {
+    if (opts.jsonMode) {
+      emit(JSON.stringify({ event: 'fanout_pending_check_failed', error: e instanceof Error ? e.message : String(e) }));
+    }
   }
 
   // #2194 fix #2: load recent per-source failures + cooldown knobs so a
@@ -425,8 +446,9 @@ export async function dispatchPerSource(
     cooldownOpts = { baseMin: 0, capMin: FAILURE_COOLDOWN_CAP_MIN };
   }
 
+  const dispatchableSources = sources.filter(src => !pendingSourceIds.has(src.id));
   const { dispatch, skippedFresh, skippedCap, skippedCooldown } =
-    selectSourcesForDispatch(sources, opts.fanoutMax, Date.now(), FULL_CYCLE_FLOOR_MIN, recentFailures, cooldownOpts);
+    selectSourcesForDispatch(dispatchableSources, opts.fanoutMax, Date.now(), FULL_CYCLE_FLOOR_MIN, recentFailures, cooldownOpts);
 
   const dispatched: string[] = [];
   for (const src of dispatch) {

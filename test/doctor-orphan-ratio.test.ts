@@ -127,6 +127,19 @@ describe('runDoctor — orphan_ratio check (local surface, D5)', () => {
     expect(check!.message).toMatch(/orphan ratio/i);
   });
 
+  test('tiny linkable universe → vacuous ok even if entity count is large', async () => {
+    for (let i = 0; i < 100; i++) {
+      await engine.putPage(`default/people/slack/person-${i}`, {
+        type: 'person', title: `Person ${i}`, compiled_truth: 'b', timeline: '', frontmatter: {},
+      });
+    }
+    const report = await runDoctorJson();
+    const check = findCheck(report, 'orphan_ratio');
+    expect(check!.status).toBe('ok');
+    expect(check!.message).toMatch(/Vacuous/i);
+    expect(check!.message).toMatch(/linkable pages/i);
+  });
+
   test('high orphan ratio (>0.5, <=0.8) → warn with fix-hint', async () => {
     for (let i = 0; i < 100; i++) {
       await engine.putPage(`companies/co-${i}`, {

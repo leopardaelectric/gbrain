@@ -117,7 +117,7 @@ function isBareName(raw: string): boolean {
   return true;
 }
 
-const PREFIX_EXPANSION_DIRS = ['people', 'companies'] as const;
+const PREFIX_EXPANSION_DIRS = ['people', 'default/people', 'default/people/slack', 'companies'] as const;
 
 /**
  * v0.40.2.0 — resolution-source-tagged variant for trajectory routing.
