@@ -3204,6 +3204,16 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
       const issue = explain(tierSubagent, resolvedSource);
       if (issue) return issue;
     }
+
+    // A usable explicit subagent model is the runtime authority. Do not let
+    // an unrelated ambient chat_model override that healthy verdict.
+    if (resolvedModel && resolvedSource) {
+      return {
+        name: 'subagent_capability',
+        status: 'ok',
+        message: `Subagent model resolves via ${resolvedSource} to "${resolvedModel}" with full tool-loop capability`,
+      };
+    }
     // v0.37 (T10 / D7) + v0.38 (D7 capability rename): warn when the configured
     // chat_model is non-Anthropic AND ANTHROPIC_API_KEY isn't set. With
     // agent.use_gateway_loop=false (the v0.38 default), subagent jobs still
@@ -3219,7 +3229,16 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
       const gatewayLoopRaw = await engine.getConfig('agent.use_gateway_loop').catch(() => null);
       const gatewayLoopEnabled = isConfigTruthy(gatewayLoopRaw);
       const { isAnthropicProvider } = await import('../core/model-config.ts');
-      if (chatModel && !isAnthropicProvider(chatModel) && !process.env.ANTHROPIC_API_KEY && !gatewayLoopEnabled) {
+      if (chatModel && !isAnthropicProvider(chatModel) && !process.env.ANTHROPIC_API_KEY) {
+        if (gatewayLoopEnabled) {
+          return {
+            name: 'subagent_capability',
+            status: 'ok',
+            message:
+              `chat_model is "${chatModel}" (non-Anthropic), ANTHROPIC_API_KEY is not set, ` +
+              `and agent.use_gateway_loop=true — subagent features route through the configured gateway loop.`,
+          };
+        }
         return {
           name: 'subagent_capability',
           status: 'warn',
@@ -3235,9 +3254,7 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
     return {
       name: 'subagent_capability',
       status: 'ok',
-      message: resolvedModel && resolvedSource
-        ? `Subagent model resolves via ${resolvedSource} to "${resolvedModel}" with full tool-loop capability`
-        : `Subagent tier resolves to default (claude-sonnet-4-6) — full tool-loop capability`,
+      message: `Subagent tier resolves to default (claude-sonnet-4-6) — full tool-loop capability`,
     };
   } catch (e) {
     return {
