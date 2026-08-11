@@ -46,8 +46,10 @@ import type { BrainEngine } from '../engine.ts';
 import { BudgetTracker, BudgetExhausted } from '../budget/budget-tracker.ts';
 import { withBudgetTracker } from '../ai/gateway.ts';
 import { listSources } from '../sources-ops.ts';
+import { anySignal } from '../abort-check.ts';
 import {
   runExtractConversationFactsCore,
+  BACKGROUND_SLICE_LIMIT,
   type ExtractConversationFactsResult,
 } from '../../commands/extract-conversation-facts.ts';
 // The type allowlist comes straight from the canonical leaf module (same
@@ -67,6 +69,8 @@ export interface ConversationFactsBackfillPhaseOpts {
    * the spend guards.
    */
   once?: boolean;
+  /** Renews the cycle DB lock while the page backfill is running. */
+  yieldDuringPhase?: () => Promise<void>;
 }
 
 /** Phase return shape (matches PhaseResult contract from cycle.ts). */
@@ -94,6 +98,16 @@ interface ResolvedConfig {
    * opt-in via this config key. PGLite engines clamp to 1 regardless.
    */
   workers: number;
+}
+
+export function resolveConversationFactsSourceTimeoutMs(
+  maxWalltimeMin: number,
+  maxTotalWalltimeMin: number,
+  elapsedMs: number,
+): number {
+  const perSourceMs = Math.max(1, maxWalltimeMin * 60_000);
+  const remainingTotalMs = Math.max(1, maxTotalWalltimeMin * 60_000 - elapsedMs);
+  return Math.min(perSourceMs, remainingTotalMs);
 }
 
 async function loadCfg(engine: BrainEngine): Promise<ResolvedConfig> {
@@ -227,17 +241,29 @@ export async function runPhaseConversationFactsBackfill(
         }
 
         try {
+          const sourceTimeoutMs = resolveConversationFactsSourceTimeoutMs(
+            cfg.maxWalltimeMin,
+            cfg.maxTotalWalltimeMin,
+            Date.now() - startedAt,
+          );
+          const sourceTimeoutSignal = AbortSignal.timeout(sourceTimeoutMs);
+          const effectiveSignal = anySignal(sourceTimeoutSignal, opts.signal);
           const result = await runExtractConversationFactsCore(engine, {
             sourceId: src.id,
             types: cfg.types,
             dryRun: opts.dryRun,
+            // Keep each source pass resumable and comfortably below the
+            // Minion wall-clock limit. Future cycles continue from durable
+            // terminal rows instead of rescanning the full corpus forever.
+            limit: BACKGROUND_SLICE_LIMIT,
             // Pass brain-wide tracker so core skips its own auto-wrap.
             budgetTracker: brainTracker,
             // v0.41.15.0 (D9 cycle context): cycle config controls
             // per-source worker count. Default 1 — opt-in concurrency
             // for cycle paths.
             workers: cfg.workers,
-          }, opts.signal);
+            yieldDuringPhase: opts.yieldDuringPhase,
+          }, effectiveSignal);
           perSourceResults[src.id] = result;
           if (result.budget_exhausted) {
             // Brain-wide cap hit. Remaining sources skipped.
@@ -248,6 +274,7 @@ export async function runPhaseConversationFactsBackfill(
             break;
           }
         } catch (err) {
+          if (opts.signal?.aborted) throw err;
           if (err instanceof BudgetExhausted) {
             skippedByBrainWideCap = Math.max(
               0,
@@ -351,6 +378,7 @@ export async function runPhaseConversationFactsBackfill(
       skipped_by_brain_wide_walltime: skippedByBrainWideWalltime,
       types: cfg.types,
       max_total_cost_usd: cfg.maxTotalCostUsd,
+      max_walltime_min: cfg.maxWalltimeMin,
       max_total_walltime_min: cfg.maxTotalWalltimeMin,
       per_source: perSourceResults,
     },

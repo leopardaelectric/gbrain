@@ -37,6 +37,7 @@ import {
 const REPO_ROOT = resolve(import.meta.dir, '..');
 const SRC_PATH = resolve(REPO_ROOT, 'src/commands/extract-conversation-facts.ts');
 const SRC = readFileSync(SRC_PATH, 'utf-8');
+const JOBS_SRC = readFileSync(resolve(REPO_ROOT, 'src/commands/jobs.ts'), 'utf-8');
 
 beforeEach(() => {
   _resetLockBusyLogCacheForTest();
@@ -150,6 +151,29 @@ describe('extract-conversation-facts — structural contracts (T5)', () => {
     // returned object literal.
     const bjpRegion = SRC.slice(SRC.indexOf('function buildJobParams'));
     expect(bjpRegion).toMatch(/workers:\s*parsed\.workers/);
+  });
+
+  test('--background fans out one job per source when source-id is omitted', () => {
+    expect(SRC).toMatch(/listSources\(engine\)/);
+    expect(SRC).toMatch(/queue\.add\(\s*['"]extract-conversation-facts['"]/);
+    expect(SRC).toMatch(/Submitted \${ids\.length} extract-conversation-facts job\(s\) \(one per source\)/);
+  });
+
+  test('background runs default to sliced batches and auto-continue the chain', () => {
+    expect(SRC).toMatch(/BACKGROUND_SLICE_LIMIT/);
+    expect(SRC).toMatch(/autoContinue:\s*true/);
+    expect(SRC).toMatch(/limit:\s*backgroundLimit/);
+    expect(JOBS_SRC).toMatch(/const shouldContinue =/);
+    expect(JOBS_SRC).toMatch(/sliceNonce:\s*`slice:\$\{job\.id\}`/);
+    expect(SRC).toMatch(/next_cursor/);
+    expect(JOBS_SRC).toMatch(/pageCursor:\s*job\.data\.pageCursor/);
+    expect(SRC).toMatch(/offset = nextOffset/);
+    expect(SRC).not.toMatch(/offset \+= batch\.length/);
+  });
+
+  test('parseArgs accepts background/follow flags without rejecting them', () => {
+    expect(SRC).toMatch(/if \(a === '--background'\) \{ out\.background = true; continue; \}/);
+    expect(SRC).toMatch(/if \(a === '--follow'\) \{ out\.follow = true; continue; \}/);
   });
 });
 

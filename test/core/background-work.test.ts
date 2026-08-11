@@ -11,6 +11,7 @@
  *   - the unregister handle removes it
  */
 import { describe, test, expect } from 'bun:test';
+import { readFileSync } from 'fs';
 import {
   drainAllBackgroundWorkForCliExit,
   drainBackgroundWorkBeforeDisconnect,
@@ -133,6 +134,11 @@ describe('background-work registry', () => {
     // sets. This just asserts the call resolves without throwing.
     await drainAllBackgroundWorkForCliExit({ timeoutMs: 10 });
     expect(true).toBe(true);
+  });
+
+  test('default drain timeout stays long enough for fire-and-forget jobs', async () => {
+    const src = readFileSync('src/core/background-work.ts', 'utf8');
+    expect(src).toContain('opts?.timeoutMs ?? 8000');
   });
 });
 

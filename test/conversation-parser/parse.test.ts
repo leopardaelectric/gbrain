@@ -118,6 +118,61 @@ describe('parseConversation — REGRESSION PR #1461 (telegram-bracket)', () => {
   });
 });
 
+  // ---------------------------------------------------------------------------
+// Slack archive block pages
+// ---------------------------------------------------------------------------
+
+describe('parseConversation — Slack archive block pages', () => {
+  test('parses Slack archive blocks from heading timestamp + user_display metadata', () => {
+    const body = [
+      '# Slack Archive: #software-support (2026-06-15)',
+      '',
+      '## 2026-06-15T13:52:40.919Z',
+      '',
+      'slack_ts: 1781531560.919449',
+      'link: https://vammo.slack.com/archives/C03LYQ46LRF/p1781531560919449',
+      'user: U0A1N3B2LQG',
+      'user_display: Jerry Cheng',
+      'user_page: [[slack/jerry-cheng]]',
+      'thread_ts: 1781461230.586819',
+      '',
+      'Parcela com saldo faltando criada com vencimento para 16/6',
+      '',
+      '## 2026-06-15T13:58:08.297Z',
+      '',
+      'slack_ts: 1781531888.297979',
+      'link: https://vammo.slack.com/archives/C03LYQ46LRF/p1781531888297979',
+      'user: U0A1N3B2LQG',
+      'user_display: Jerry Cheng',
+      'user_page: [[slack/jerry-cheng]]',
+      'thread_ts: 1781437701.298289',
+      '',
+      '<@U0AAJ7ZUQT1> consegue dar uma olhada aqui depois e tentar de novo?',
+      'Nesse caso tá mostrando que foi erro do banco.',
+    ].join('\n');
+
+    const r = parseConversation(body, {
+      page: makePage({ date: '2026-06-15T00:00:00.000Z', source: 'slack' }),
+      noPolish: true,
+      noFallback: true,
+    });
+
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('slack-archive-block');
+    expect(r.messages).toHaveLength(2);
+    expect(r.messages[0]).toEqual({
+      speaker: 'Jerry Cheng',
+      timestamp: '2026-06-15T13:52:40.919Z',
+      text: 'Parcela com saldo faltando criada com vencimento para 16/6',
+    });
+    expect(r.messages[1]).toEqual({
+      speaker: 'Jerry Cheng',
+      timestamp: '2026-06-15T13:58:08.297Z',
+      text: '<@U0AAJ7ZUQT1> consegue dar uma olhada aqui depois e tentar de novo?\nNesse caso tá mostrando que foi erro do banco.',
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // All built-ins must parse their test_positive samples
 // ---------------------------------------------------------------------------

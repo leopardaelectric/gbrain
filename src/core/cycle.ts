@@ -2642,6 +2642,7 @@ export async function runCycle(
             dryRun,
             signal: cycleSignal,
             once: opts.onceForPhase === 'conversation_facts_backfill',
+            yieldDuringPhase: buildYieldDuringPhase(lock, opts.yieldDuringPhase),
           }),
         );
         result.duration_ms = duration_ms;

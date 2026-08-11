@@ -402,7 +402,7 @@ export async function dispatchPerSource(
     // (default source) and pre-v0.18 brains without the sources table.
     const job = await queue.add(
       'autopilot-cycle',
-      { repoPath: opts.repoPath },
+      { repoPath: opts.repoPath, phases: SOURCE_FRESHNESS_PHASES },
       {
         queue: 'default',
         // Slot key dedups repeats within one slot; maxPending: 1 is the

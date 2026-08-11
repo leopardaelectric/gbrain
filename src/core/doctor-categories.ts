@@ -119,6 +119,7 @@ export const BRAIN_CHECK_NAMES: ReadonlySet<string> = new Set([
   'unified_multimodal_coverage',
   'unverified_extractions',
   'voice_gate_health',
+  'dangling_aliases',
 ]);
 
 /**

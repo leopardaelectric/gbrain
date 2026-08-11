@@ -45,6 +45,14 @@ async function safeCount(engine: BrainEngine, sql: string, params: unknown[] = [
   }
 }
 
+const RICH_ENTITY_TYPES_SQL = "('person', 'company', 'organization', 'entity')";
+const EXCLUDE_SLACK_IDENTITY_GLUE_SQL = `
+         AND NOT EXISTS (
+           SELECT 1 FROM tags tag_filter
+           WHERE tag_filter.page_id = p.id
+             AND tag_filter.tag IN ('bot', 'slack-user')
+         )`;
+
 /**
  * embed_staleness: count of chunks awaiting embedding.
  *
@@ -119,8 +127,13 @@ export async function checkEntityLinkCoverage(
   const totalEntities = await safeCount(
     engine,
     `SELECT COUNT(*) AS count FROM pages
-       WHERE type IN ('person', 'company', 'organization', 'entity')
-         AND deleted_at IS NULL`,
+       WHERE type IN ${RICH_ENTITY_TYPES_SQL}
+         AND deleted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM tags tag_filter
+           WHERE tag_filter.page_id = pages.id
+             AND tag_filter.tag IN ('bot', 'slack-user')
+         )`,
   );
 
   if (totalEntities === 0) {
@@ -142,8 +155,9 @@ export async function checkEntityLinkCoverage(
     engine,
     `SELECT COUNT(*) AS count FROM (
        SELECT p.id FROM pages p ${sampleClause}
-       WHERE p.type IN ('person', 'company', 'organization', 'entity')
+       WHERE p.type IN ${RICH_ENTITY_TYPES_SQL}
          AND p.deleted_at IS NULL
+         ${EXCLUDE_SLACK_IDENTITY_GLUE_SQL}
          AND EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
      ) sub`,
   );
@@ -214,8 +228,13 @@ export async function checkTimelineCoverage(
   const totalEntities = await safeCount(
     engine,
     `SELECT COUNT(*) AS count FROM pages
-       WHERE type IN ('person', 'company', 'organization', 'entity')
-         AND deleted_at IS NULL`,
+       WHERE type IN ${RICH_ENTITY_TYPES_SQL}
+         AND deleted_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM tags tag_filter
+           WHERE tag_filter.page_id = pages.id
+             AND tag_filter.tag IN ('bot', 'slack-user')
+         )`,
   );
 
   if (totalEntities === 0) {
@@ -235,8 +254,9 @@ export async function checkTimelineCoverage(
     engine,
     `SELECT COUNT(*) AS count FROM (
        SELECT p.id FROM pages p ${sampleClause}
-       WHERE p.type IN ('person', 'company', 'organization', 'entity')
+       WHERE p.type IN ${RICH_ENTITY_TYPES_SQL}
          AND p.deleted_at IS NULL
+         ${EXCLUDE_SLACK_IDENTITY_GLUE_SQL}
          AND EXISTS (SELECT 1 FROM timeline_entries t WHERE t.page_id = p.id)
      ) sub`,
   );

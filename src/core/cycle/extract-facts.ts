@@ -310,8 +310,8 @@ export async function runExtractFacts(
   // `slugs: []` from an incremental sync no-op was previously treated
   // identically to `slugs: undefined` (full-walk intent) because
   // `opts.slugs && opts.slugs.length > 0` is falsy for both. On a
-  // multi-thousand-page brain the unintended full walk exceeds the
-  // autopilot-cycle timeout (~600s) and dead-letters the job.
+  // multi-thousand-page brain the unintended full walk can exceed the
+  // autopilot-cycle timeout and dead-letter the job.
   let slugs: string[];
   if (opts.slugs !== undefined) {
     // Caller explicitly passed a list (possibly empty). Empty array is a

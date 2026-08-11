@@ -161,6 +161,14 @@ export const SEGMENT_TEXT_CHAR_LIMIT = 6500;
  */
 export const MAX_PAGE_BODY_BYTES = 25 * 1024 * 1024;
 
+/** Background runs should stay under the 30-min wall-clock wall. */
+export const BACKGROUND_SLICE_LIMIT = 250;
+
+export interface ExtractConversationFactsPageCursor {
+  typeIndex: number;
+  offset: number;
+}
+
 /** Default cost cap when no tracker is passed explicitly. */
 export const DEFAULT_MAX_COST_USD = 5.0;
 
@@ -323,6 +331,14 @@ export interface ExtractConversationFactsCoreOpts {
    * dedup → provenance all execute THIS production pipeline with zero LLM calls.
    */
   extractor?: (input: ExtractInput) => Promise<ExtractedFact[]>;
+  /** Resume from a previous page-enumeration cursor. */
+  pageCursor?: ExtractConversationFactsPageCursor;
+  /**
+   * Cooperative keepalive called after page attempts, throttled to once every
+   * 30 seconds. Cycle callers use this to renew the cycle DB lock during long
+   * backfills without adding a DB write per page.
+   */
+  yieldDuringPhase?: () => Promise<void>;
 }
 
 export interface ExtractConversationFactsResult {
@@ -367,6 +383,7 @@ export interface ExtractConversationFactsResult {
   segments_processed: number;
   facts_extracted: number;
   facts_inserted: number;
+  next_cursor?: ExtractConversationFactsPageCursor | null;
   budget_exhausted?: boolean;
   spent_usd?: number;
 }
@@ -864,7 +881,7 @@ export async function findFreshExtractionOutcomes(
       sourceId,
       pages.map((page) => page.slug),
       [TERMINAL_AUDIT_SOURCE, NON_EXTRACTABLE_AUDIT_SOURCE],
-      TERMINAL_AUDIT_SOURCE,
+      NON_EXTRACTABLE_AUDIT_SOURCE,
     ],
   );
   const outcomes = new Map<string, DurableExtractionOutcome>();
@@ -1025,6 +1042,12 @@ async function processPage(
         );
         state.result.pages_marked_non_extractable++;
       }
+      await writeTerminalAuditRowIfMissing(
+        state.engine,
+        state.sourceId,
+        page.slug,
+        snapshot.versionToken,
+      );
     }
     return { newEndIso: null };
   }
@@ -1197,6 +1220,69 @@ async function writeTerminalAuditRow(
   await engine.insertFacts([fact], { source_id: sourceId }); // gbrain-allow-direct-insert: page-level TERMINAL audit row (Codex C7 / E16) marks extraction completion in the durable facts table — there's no fence equivalent because this is internal audit state, not user-facing knowledge
 }
 
+async function hasTerminalAuditRow(
+  engine: BrainEngine,
+  sourceId: string,
+  slug: string,
+  versionToken: string,
+): Promise<boolean> {
+  const rows = await engine.executeRaw<{ count: string | number }>(
+    `SELECT COUNT(*) AS count
+       FROM facts
+      WHERE source_id = $1
+        AND source = $2
+        AND source_session = $3`,
+    [sourceId, TERMINAL_AUDIT_SOURCE, outcomeSession(TERMINAL_AUDIT_SOURCE, slug, versionToken)],
+  );
+  return Number(rows[0]?.count ?? 0) > 0;
+}
+
+async function writeTerminalAuditRowIfMissing(
+  engine: BrainEngine,
+  sourceId: string,
+  slug: string,
+  versionToken: string,
+): Promise<void> {
+  if (await hasTerminalAuditRow(engine, sourceId, slug, versionToken)) return;
+  const rowNum = await peekRowNumStart(engine, sourceId, slug);
+  await writeTerminalAuditRow(engine, sourceId, slug, rowNum, versionToken);
+}
+
+async function listPagesMissingTerminalAuditRows(
+  engine: BrainEngine,
+  opts: {
+    sourceId: string;
+    type: string;
+    limit: number;
+    excludeSlugs: string[];
+  },
+): Promise<Page[]> {
+  const rows = await engine.executeRaw<{ slug: string }>(
+    `SELECT p.slug
+       FROM pages p
+      WHERE p.source_id = $1
+        AND p.type = $2
+        AND p.deleted_at IS NULL
+        AND NOT (p.slug = ANY($3::text[]))
+        AND NOT EXISTS (
+          SELECT 1 FROM facts f
+           WHERE f.source = $4
+             AND f.source_markdown_slug = p.slug
+             AND f.source_id = p.source_id
+        )
+      ORDER BY p.updated_at DESC
+      LIMIT $5`,
+    [opts.sourceId, opts.type, opts.excludeSlugs, TERMINAL_AUDIT_SOURCE, opts.limit],
+  );
+
+  const pages: Page[] = [];
+  for (const row of rows) {
+    const page = await engine.getPage(row.slug, { sourceId: opts.sourceId });
+    if (page) pages.push(page);
+  }
+  return pages;
+}
+
 /**
  * Core entry point — one source per call. Caller (CLI / Minion / cycle
  * phase) handles multi-source iteration externally.
@@ -1337,6 +1423,7 @@ export async function runExtractConversationFactsCore(
     // parallel workers (D9) can mutate it atomically per-page. Serialize
     // back to op-checkpoint string[] at batch boundaries + final flush.
     state.cpMap = cpEntriesToMap(initialEntries);
+    let lastKeepaliveAt = 0;
 
     /**
      * Wrap processPage in the per-page advisory lock (D2 + D12). The
@@ -1395,6 +1482,15 @@ export async function runExtractConversationFactsCore(
           return;
         }
         throw err;
+      } finally {
+        if (opts.yieldDuringPhase && Date.now() - lastKeepaliveAt >= 30_000) {
+          lastKeepaliveAt = Date.now();
+          try {
+            await opts.yieldDuringPhase();
+          } catch {
+            // Keepalive failures must not discard successfully extracted facts.
+          }
+        }
       }
     };
 
@@ -1440,12 +1536,73 @@ export async function runExtractConversationFactsCore(
       // honors AbortSignal at each claim boundary and threads
       // BudgetExhausted abort (D13) automatically.
       let processedPagesCount = 0;
-      pageLoop: for (const type of concreteTypes) {
-        let offset = 0;
+      let nextCursor: ExtractConversationFactsPageCursor | null = null;
+      const startTypeIndex = Math.max(0, Math.floor(opts.pageCursor?.typeIndex ?? 0));
+      const startOffset = Math.max(0, Math.floor(opts.pageCursor?.offset ?? 0));
+      pageLoop: for (let typeIndex = startTypeIndex; typeIndex < concreteTypes.length; typeIndex++) {
+        const type = concreteTypes[typeIndex];
+        const seenBacklogSlugs = new Set<string>();
+
+        // Drain never-completed pages first. A small --limit should reduce
+        // doctor backlog instead of being spent on already-checkpointed
+        // recent conversations that have no new segments.
+        while (!opts.force && !opts.sinceIso) {
+          if (signal?.aborted) throw new Error('aborted');
+          if (opts.limit && processedPagesCount >= opts.limit) {
+            nextCursor = { typeIndex, offset: 0 };
+            break pageLoop;
+          }
+
+          const remaining = opts.limit
+            ? Math.min(PAGE_LIST_BATCH, opts.limit - processedPagesCount)
+            : PAGE_LIST_BATCH;
+          const backlogBatch = await listPagesMissingTerminalAuditRows(engine, {
+            sourceId,
+            type,
+            limit: remaining,
+            excludeSlugs: Array.from(seenBacklogSlugs),
+          });
+          if (backlogBatch.length === 0) break;
+
+          const backlogPoolResult = await runSlidingPool({
+            items: backlogBatch,
+            workers,
+            signal,
+            onItem: (page) => processPageWithLock(page),
+            onError: (error) => (isAbortError(error) ? 'abort' : 'continue'),
+            failureLabel: (page) => page.slug,
+          });
+          const backlogCancellation = backlogPoolResult.failures.find((failure) =>
+            isAbortError(failure.error),
+          );
+          if (backlogCancellation) throw backlogCancellation.error;
+          result.pages_failed += backlogPoolResult.errored;
+          for (const failure of backlogPoolResult.failures) {
+            const message = failure.error instanceof Error
+              ? failure.error.message
+              : String(failure.error);
+            process.stderr.write(
+              `[extract-conversation-facts] ${failure.label} failed: ${message}\n`,
+            );
+          }
+
+          for (const page of backlogBatch) seenBacklogSlugs.add(page.slug);
+          processedPagesCount += backlogBatch.length;
+
+          if (!dryRun) {
+            await recordCompleted(engine, checkpointKey(sourceId), cpMapToEntries(state.cpMap));
+          }
+          if (backlogBatch.length < remaining) break;
+        }
+
+        let offset = typeIndex === startTypeIndex ? startOffset : 0;
         // eslint-disable-next-line no-constant-condition
         while (true) {
           if (signal?.aborted) throw new Error('aborted');
-          if (opts.limit && processedPagesCount >= opts.limit) break pageLoop;
+          if (opts.limit && processedPagesCount >= opts.limit) {
+            nextCursor = { typeIndex, offset };
+            break pageLoop;
+          }
 
           const batch = await engine.listPages({
             type,
@@ -1455,7 +1612,9 @@ export async function runExtractConversationFactsCore(
           });
           if (batch.length === 0) break;
 
-          let claimable = batch;
+          // Pages handled by the backlog-first pass must not be processed a
+          // second time when the regular type walk reaches them in this run.
+          let claimable = batch.filter((page) => !seenBacklogSlugs.has(page.slug));
           // Checkpoints are an intra-page cursor; fresh durable outcomes are
           // the page-level selection authority and survive checkpoint GC.
           if (!opts.force && claimable.length > 0) {
@@ -1474,9 +1633,15 @@ export async function runExtractConversationFactsCore(
 
           // Apply --limit after durable filtering. The limit caps pages that
           // need work, not already-completed pages scanned to find that work.
+          let nextOffset = offset + batch.length;
           if (opts.limit) {
             const remaining = opts.limit - processedPagesCount;
             if (remaining < claimable.length) {
+              const firstUnprocessed = claimable[remaining];
+              const firstUnprocessedIndex = batch.findIndex(
+                (page) => page.slug === firstUnprocessed?.slug,
+              );
+              if (firstUnprocessedIndex >= 0) nextOffset = offset + firstUnprocessedIndex;
               claimable = claimable.slice(0, remaining);
             }
           }
@@ -1510,7 +1675,11 @@ export async function runExtractConversationFactsCore(
           }
 
           processedPagesCount += claimable.length;
-          offset += batch.length;
+          offset = nextOffset;
+          if (opts.limit && processedPagesCount >= opts.limit) {
+            nextCursor = { typeIndex, offset };
+            break pageLoop;
+          }
           if (batch.length < PAGE_LIST_BATCH) break;
 
           // Persist checkpoint between batches so a crash mid-walk
@@ -1520,6 +1689,8 @@ export async function runExtractConversationFactsCore(
           }
         }
       }
+
+      result.next_cursor = nextCursor;
     }
 
     // Final checkpoint flush.
@@ -1558,6 +1729,7 @@ export async function runExtractConversationFactsCore(
       if (!dryRun) await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ true);
       // Return partial result — caller (CLI / Minion) decides how to
       // surface. NOT a thrown failure.
+      result.next_cursor = result.next_cursor ?? null;
       return result;
     }
     throw err;
@@ -1591,6 +1763,7 @@ export async function runExtractConversationFactsCore(
       /* halted */ result.budget_exhausted === true,
     );
   }
+  result.next_cursor = result.next_cursor ?? null;
 
   return result;
 }
@@ -1701,6 +1874,8 @@ interface ParsedArgs {
   overrideDisabled?: boolean;
   /** v0.41.15.0 (D9): in-process parallel workers per source. */
   workers?: number;
+  background?: boolean;
+  follow?: boolean;
   yes?: boolean;
   help?: boolean;
   error?: string;
@@ -1713,6 +1888,8 @@ function parseArgs(args: string[]): ParsedArgs {
     if (a === '--help' || a === '-h') { out.help = true; continue; }
     if (a === '--dry-run') { out.dryRun = true; continue; }
     if (a === '--force') { out.force = true; continue; }
+    if (a === '--background') { out.background = true; continue; }
+    if (a === '--follow') { out.follow = true; continue; }
     if (a === '--yes' || a === '-y') { out.yes = true; continue; }
     if (a === '--override-disabled') { out.overrideDisabled = true; continue; }
     if (a === '--slug') { out.slug = args[++i]; continue; }
@@ -1851,13 +2028,63 @@ export async function runExtractConversationFacts(
   }
 
   // --background path.
-  const backgrounded = await maybeBackground({
-    engine,
-    args,
-    jobName: 'extract-conversation-facts',
-    paramBuilder: buildJobParams,
-  });
-  if (backgrounded) return;
+  if (args.includes('--background')) {
+    const parsed = parseArgs(args);
+    if (parsed.error) {
+      console.error(parsed.error);
+      console.error(HELP);
+      process.exit(1);
+    }
+
+    if (engine.kind === 'pglite') {
+      process.stderr.write('[--background] PGLite has no worker daemon; running inline.\n');
+    } else {
+      const sourceIds = parsed.sourceId
+        ? [parsed.sourceId]
+        : (await listSources(engine)).map((s) => s.id);
+      if (sourceIds.length <= 1) {
+        const shouldAutoContinue = !parsed.dryRun && parsed.slug == null && parsed.limit == null;
+        const backgroundLimit = shouldAutoContinue ? BACKGROUND_SLICE_LIMIT : parsed.limit;
+        const backgrounded = await maybeBackground({
+          engine,
+          args: parsed.sourceId ? args : [...args, '--source-id', sourceIds[0] ?? 'default'],
+          jobName: 'extract-conversation-facts',
+          paramBuilder: (jobArgs) => ({
+            ...buildJobParams(jobArgs),
+            limit: backgroundLimit,
+            ...(shouldAutoContinue ? { autoContinue: true } : {}),
+          }),
+        });
+        if (backgrounded) return;
+      } else {
+        const { MinionQueue } = await import('../core/minions/queue.ts');
+        const queue = new MinionQueue(engine);
+        const ids: number[] = [];
+        const filteredArgs = args.filter((a) => a !== '--background' && a !== '--follow');
+        const shouldAutoContinue = !parsed.dryRun && parsed.slug == null && parsed.limit == null;
+        const backgroundLimit = shouldAutoContinue ? BACKGROUND_SLICE_LIMIT : parsed.limit;
+        for (const sid of sourceIds) {
+          const jobParams = {
+            ...buildJobParams(filteredArgs),
+            sourceId: sid,
+            limit: backgroundLimit,
+            ...(shouldAutoContinue ? { autoContinue: true } : {}),
+          };
+          const job = await queue.add(
+            'extract-conversation-facts',
+            jobParams,
+            {
+              idempotency_key: `extract-conversation-facts:${sid}:${filteredArgs.join(' ')}${backgroundLimit != null ? `:limit=${backgroundLimit}` : ''}${shouldAutoContinue ? ':auto-continue' : ''}`,
+            },
+          );
+          ids.push(job.id);
+        }
+        console.log(`Submitted ${ids.length} extract-conversation-facts job(s) (one per source): ${ids.map((id) => `job_id=${id}`).join(' ')}`);
+        console.log('Follow with: gbrain jobs follow <id>');
+        return;
+      }
+    }
+  }
 
   const parsed = parseArgs(args);
   if (parsed.error) {

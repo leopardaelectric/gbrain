@@ -1,7 +1,10 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseGlobalFlags, cliOptsToProgressOptions, DEFAULT_CLI_OPTIONS, setCliOptions, getCliOptions, _resetCliOptionsForTest } from '../src/core/cli-options.ts';
+
+const CLI_OPTIONS_SRC = readFileSync(join(import.meta.dir, '..', 'src', 'core', 'cli-options.ts'), 'utf-8');
 
 describe('parseGlobalFlags', () => {
   test('empty argv → defaults, empty rest', () => {
@@ -175,6 +178,13 @@ describe('cliOptsToProgressOptions', () => {
   test('quiet takes priority over progressJson', () => {
     const opts = cliOptsToProgressOptions({ quiet: true, progressJson: true, progressInterval: 1000, timeoutMs: null, explain: false, brain: null });
     expect(opts.mode).toBe('quiet');
+  });
+});
+
+describe('maybeBackground retry behavior', () => {
+  test('dead/failed idempotent jobs are retried instead of returned as corpses', () => {
+    expect(CLI_OPTIONS_SRC).toMatch(/if \(job\.status === 'dead' \|\| job\.status === 'failed'\)/);
+    expect(CLI_OPTIONS_SRC).toMatch(/await queue\.retryJob\(job\.id\)/);
   });
 });
 

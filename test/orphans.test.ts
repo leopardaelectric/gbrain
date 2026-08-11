@@ -74,6 +74,27 @@ describe('shouldExclude', () => {
     expect(shouldExclude('openclaw/config/agent')).toBe(true);
   });
 
+  test('excludes structural Slack archive prefixes', () => {
+    expect(shouldExclude('default/shared/slack-conversations/coor-retorno-ativos/123')).toBe(true);
+    expect(shouldExclude('default/shared/slack-archive/coor-retorno-ativos/123')).toBe(true);
+  });
+
+  test('excludes structural source mirror prefixes', () => {
+    expect(shouldExclude('default/people/slack/jane-doe')).toBe(true);
+    expect(shouldExclude('default/sources/jira/PROJ-123')).toBe(true);
+    expect(shouldExclude('default/sources/github/acme/repo')).toBe(true);
+    expect(shouldExclude('default/sources/google-drive/doc-123')).toBe(true);
+    expect(shouldExclude('default/sources/internal/index')).toBe(true);
+    expect(shouldExclude('default/shared/sops/oncall')).toBe(true);
+  });
+
+  test('excludes generated report archives without hiding curated reports', () => {
+    expect(shouldExclude('default/reports/2026-07-15-slack-dream-wrapper')).toBe(true);
+    expect(shouldExclude('reports/loop-run/2026-07-15-loop-registry-sentinel')).toBe(true);
+    expect(shouldExclude('reports/opportunity-miner/2026-07-15')).toBe(true);
+    expect(shouldExclude('reports/maintenance-charge-policy/2026-07-08')).toBe(false);
+  });
+
   test('excludes first-segment: scratch', () => {
     expect(shouldExclude('scratch/idea-dump')).toBe(true);
   });
@@ -123,11 +144,25 @@ describe('shouldExclude', () => {
     expect(shouldExclude('people/jane-doe', overrides)).toBe(false);
   });
 
+  test('excludes first-segment: default/atoms/inbox/extracts', () => {
+    expect(shouldExclude('default/shared/slack-conversations/2026-06-01-abc')).toBe(true);
+    expect(shouldExclude('atoms/2026-06-04/signal')).toBe(true);
+    expect(shouldExclude('inbox/2026-06-01-xyz')).toBe(true);
+    expect(shouldExclude('extracts/2026-06-01-xyz')).toBe(true);
+  });
+
+  test('excludes loop indexes and run artifacts', () => {
+    expect(shouldExclude('loops/box-guardian/index')).toBe(true);
+    expect(shouldExclude('loops/box-guardian/runs/2026-07-15')).toBe(true);
+    expect(shouldExclude('default/loops/box-guardian/runs/2026-07-15')).toBe(true);
+  });
+
   test('does NOT exclude a normal content page', () => {
     expect(shouldExclude('companies/acme')).toBe(false);
     expect(shouldExclude('people/jane-doe')).toBe(false);
     expect(shouldExclude('projects/gbrain')).toBe(false);
     expect(shouldExclude('agents/arya/qa-reports/launch-review')).toBe(false);
+    expect(shouldExclude('default/companies/acme')).toBe(false);
   });
 
   test('does NOT exclude a page ending with log-like text that is not /log', () => {

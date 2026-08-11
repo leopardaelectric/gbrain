@@ -48,6 +48,7 @@
 const THIRTY_MIN_MS = 30 * 60 * 1000;
 const SIXTY_MIN_MS = 60 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
+const NINETY_MIN_MS = 90 * 60 * 1000;
 
 /**
  * Default wall-clock budget (ms) for long-running handler types. A handler
@@ -57,7 +58,7 @@ export const HANDLER_DEFAULT_TIMEOUT_MS: Readonly<Record<string, number>> = {
   subagent: THIRTY_MIN_MS,
   subagent_aggregator: THIRTY_MIN_MS,
   'embed-backfill': THIRTY_MIN_MS,
-  'autopilot-cycle': THIRTY_MIN_MS,
+  'autopilot-cycle': NINETY_MIN_MS,
   // #2194 fix #3: brain-wide maintenance (embed-all/orphans/purge/…) can run
   // longer than a single source cycle; give it the same 30-min budget.
   'autopilot-global-maintenance': THIRTY_MIN_MS,
@@ -74,6 +75,7 @@ export const HANDLER_DEFAULT_TIMEOUT_MS: Readonly<Record<string, number>> = {
   // rate-leased LLM synopsis call per chunk; large transcript pages need more
   // than the standard 30-min long-job budget.
   contextual_reindex_per_chunk: SIXTY_MIN_MS,
+  'extract-conversation-facts': THIRTY_MIN_MS,
 };
 
 /**

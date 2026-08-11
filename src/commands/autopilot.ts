@@ -138,6 +138,61 @@ function parseArg(args: string[], flag: string): string | undefined {
   return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
 }
 
+const AUTOPILOT_JOB_TIMEOUT_FLOOR_MS = 90 * 60 * 1000;
+const AUTOPILOT_LOCK_STALE_MINUTES = 10;
+
+function isPidAliveDefault(pid: number): boolean {
+  const procStatPath = `/proc/${pid}/stat`;
+  try {
+    if (existsSync(procStatPath)) {
+      const stat = readFileSync(procStatPath, 'utf8');
+      const parts = stat.split(' ');
+      const state = parts[2];
+      return state !== 'Z';
+    }
+  } catch {
+    // Fall through to the signal probe.
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    return code !== 'ESRCH';
+  }
+}
+
+/**
+ * Autopilot-dispatched jobs need enough wall-clock to finish an actual
+ * maintenance pass. The old 2x-interval cap turned the default 5m tick
+ * into a 10m job timeout, which was shorter than real full cycles on this
+ * brain and caused spurious `aborted: timeout` deaths.
+ *
+ * Keep the timeout at least 90 minutes, then scale up for longer intervals.
+ */
+export function resolveAutopilotJobTimeoutMs(baseIntervalSeconds: number): number {
+  return Math.max(baseIntervalSeconds * 2 * 1000, AUTOPILOT_JOB_TIMEOUT_FLOOR_MS);
+}
+
+export interface AutopilotLockProbe {
+  selfPid?: number;
+  isPidAlive?: (pid: number) => boolean;
+}
+
+export function shouldTakeOverAutopilotLock(
+  existingPid: number,
+  ageMinutes: number,
+  opts: AutopilotLockProbe = {},
+): boolean {
+  if (!Number.isFinite(existingPid) || existingPid <= 0) {
+    return ageMinutes >= AUTOPILOT_LOCK_STALE_MINUTES;
+  }
+  const selfPid = opts.selfPid ?? process.pid;
+  if (existingPid === selfPid) return false;
+  const isPidAlive = opts.isPidAlive ?? isPidAliveDefault;
+  return !isPidAlive(existingPid);
+}
+
 function logError(phase: string, e: unknown) {
   const msg = e instanceof Error ? e.message : String(e);
   const ts = new Date().toISOString().slice(0, 19);
@@ -670,7 +725,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
   //
   // No `process.on('exit')` handler — its callback runs synchronously and
   // cannot await the worker's drain.
-  const shutdown = async (sig: string) => {
+  const shutdown = async (sig: string, exitCode = 0) => {
     if (stopping) return;
     stopping = true;
     console.log(`Autopilot stopping (${sig}).`);
@@ -686,7 +741,7 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
     await closeEngine();
     deregisterEngineClose();
     try { unlinkSync(lockPath); } catch { /* already gone */ }
-    process.exit(0);
+    process.exit(exitCode);
   };
   process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.on('SIGINT',  () => { void shutdown('SIGINT'); });
@@ -832,18 +887,16 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
             `[autopilot] FATAL: unrecoverable DB error (${(e as Error).message ?? 'unknown'}). ` +
             `Exiting so launchd ThrottleInterval can apply backoff.`,
           );
-          stopping = true;
-          setCliExitVerdict(1);
-          break;
+          await shutdown('unrecoverable-db-error', 1);
+          return;
         }
         if (autopilotReconnectFails >= AUTOPILOT_MAX_RECONNECT_FAILS) {
           console.error(
             `[autopilot] FATAL: ${autopilotReconnectFails} consecutive reconnect failures. ` +
             `Last error: ${(e as Error).message ?? 'unknown'}. Exiting.`,
           );
-          stopping = true;
-          setCliExitVerdict(1);
-          break;
+          await shutdown('reconnect-failure-cap', 1);
+          return;
         }
       }
     }

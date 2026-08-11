@@ -205,6 +205,33 @@ describe('BudgetTracker.reserve', () => {
     ]);
   });
 
+  test('priced OpenAI chat models enforce --max-cost through canonical pricing', () => {
+    const underCap = new BudgetTracker({ maxCostUsd: 1.0, label: 'test', auditPath });
+    expect(() =>
+      underCap.reserve({
+        modelId: 'openai:gpt-5',
+        estimatedInputTokens: 1000,
+        maxOutputTokens: 1000,
+        kind: 'chat',
+      }),
+    ).not.toThrow();
+
+    const tinyCap = new BudgetTracker({ maxCostUsd: 0.001, label: 'test', auditPath });
+    let caught: unknown = null;
+    try {
+      tinyCap.reserve({
+        modelId: 'openai:gpt-5',
+        estimatedInputTokens: 1000,
+        maxOutputTokens: 1000,
+        kind: 'chat',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(BudgetExhausted);
+    expect((caught as BudgetExhausted).reason).toBe('cost');
+  });
+
   test('no cap + unknown pricing: warns once per process, no throw', () => {
     const t = new BudgetTracker({ label: 'test', auditPath });
     expect(() =>

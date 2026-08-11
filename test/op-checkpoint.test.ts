@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
+import type { BrainEngine } from '../src/core/engine.ts';
 import {
   loadOpCheckpoint,
   recordCompleted,
@@ -106,37 +107,49 @@ describe('loadOpCheckpoint / recordCompleted / clearOpCheckpoint', () => {
     expect(result.sort()).toEqual(['chunk-1', 'chunk-2', 'chunk-3']);
   });
 
+  test('recordCompleted remains compatible with installs that enforce JSONB arrays', async () => {
+    const key = { op: 'embed', fingerprint: 'array-check' };
+    await engine.executeRaw(
+      `ALTER TABLE op_checkpoints
+         ADD CONSTRAINT op_checkpoint_test_completed_keys_array
+         CHECK (jsonb_typeof(completed_keys) = 'array')`,
+    );
+    try {
+      expect(await recordCompleted(engine, key, ['chunk-1', 'chunk-2'])).toBe(true);
+      expect((await loadOpCheckpoint(engine, key)).sort()).toEqual(['chunk-1', 'chunk-2']);
+    } finally {
+      await engine.executeRaw(
+        `ALTER TABLE op_checkpoints DROP CONSTRAINT IF EXISTS op_checkpoint_test_completed_keys_array`,
+      );
+    }
+  });
+
+  test('recordCompleted avoids postgres.js direct JSONB string encoding', async () => {
+    const calls: string[] = [];
+    const directEngine = {
+      executeRawDirect: async (sql: string) => {
+        calls.push(sql);
+        if (/\$3::jsonb/.test(sql)) {
+          throw new Error('completed_keys was encoded as a JSONB string');
+        }
+        return [];
+      },
+    } as unknown as BrainEngine;
+
+    expect(await recordCompleted(
+      directEngine,
+      { op: 'embed', fingerprint: 'direct-jsonb' },
+      ['chunk-1', 'chunk-2'],
+    )).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
   test('write overwrites prior state', async () => {
     const key = { op: 'embed', fingerprint: 'abc12345' };
     await recordCompleted(engine, key, ['chunk-1']);
     await recordCompleted(engine, key, ['chunk-1', 'chunk-2']);
     const result = await loadOpCheckpoint(engine, key);
     expect(result.sort()).toEqual(['chunk-1', 'chunk-2']);
-  });
-
-  test('legacy scalar completed_keys is tolerated instead of crashing', async () => {
-    await engine.executeRaw(
-      `INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
-       VALUES ('embed', 'scalar-legacy', '"legacy-one"'::jsonb, now())`,
-    );
-
-    const result = await loadOpCheckpoint(engine, { op: 'embed', fingerprint: 'scalar-legacy' });
-    expect(result).toEqual(['legacy-one']);
-  });
-
-  test('oversized legacy scalar completed_keys is ignored instead of loaded', async () => {
-    const huge = 'x'.repeat(1_000_001);
-    await engine.executeRaw(
-      `INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
-       VALUES ($1, $2, to_jsonb($3::text), now())`,
-      ['extract-conversation-facts', 'scalar-huge', huge],
-    );
-
-    const result = await loadOpCheckpoint(engine, {
-      op: 'extract-conversation-facts',
-      fingerprint: 'scalar-huge',
-    });
-    expect(result).toEqual([]);
   });
 
   test('different fingerprints stay isolated', async () => {

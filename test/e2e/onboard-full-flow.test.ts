@@ -16,7 +16,11 @@ import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { computeRemediationPlan } from '../../src/core/remediation/index.ts';
 import { captureMetric } from '../../src/core/onboard/impact-capture.ts';
 import { buildOnboardReport, toOnboardRecommendation } from '../../src/core/onboard/render.ts';
-import { runAllOnboardChecks } from '../../src/core/onboard/checks.ts';
+import {
+  checkEntityLinkCoverage,
+  checkTimelineCoverage,
+  runAllOnboardChecks,
+} from '../../src/core/onboard/checks.ts';
 import { makeRemediationStep } from '../../src/core/remediation-step.ts';
 
 let engine: PGLiteEngine;
@@ -95,6 +99,42 @@ describe('onboard E2E — runAllOnboardChecks', () => {
       .filter((r) => r.check.name === 'takes_count')
       .reduce((s, r) => s + r.remediations.length, 0);
     expect(takesRemediations).toBe(0);
+  });
+
+  test('entity coverage checks ignore Slack identity glue pages', async () => {
+    const scoped = new PGLiteEngine();
+    await scoped.connect({});
+    await scoped.initSchema();
+    try {
+      const page = {
+        type: 'person' as const,
+        title: 'Entity',
+        compiled_truth: 'Entity content',
+        timeline: '',
+        frontmatter: {},
+      };
+      await scoped.putPage('people/alice', { ...page, title: 'Alice' });
+      await scoped.putPage('people/bob', { ...page, title: 'Bob' });
+      await scoped.putPage('companies/acme', { ...page, type: 'company', title: 'Acme' });
+      await scoped.putPage('people/slack-bot', { ...page, title: 'GitHub' });
+      await scoped.addTag('people/slack-bot', 'bot');
+      await scoped.addTag('people/slack-bot', 'slack-user');
+      await scoped.putPage('people/slack-human', { ...page, title: 'Slack Human' });
+      await scoped.addTag('people/slack-human', 'slack-user');
+
+      await scoped.addLink('people/alice', 'companies/acme', '', 'works_at');
+      await scoped.addTimelineEntry('people/alice', { date: '2026-01-15', summary: 'Joined' });
+      await scoped.addLink('people/bob', 'people/slack-bot', '', 'mentions');
+      await scoped.addTimelineEntry('people/slack-bot', { date: '2026-01-16', summary: 'Bot event' });
+
+      const links = await checkEntityLinkCoverage(scoped);
+      const timeline = await checkTimelineCoverage(scoped);
+
+      expect(links.check.message).toContain('Coverage 33%');
+      expect(timeline.check.message).toContain('Coverage 33%');
+    } finally {
+      await scoped.disconnect();
+    }
   });
 });
 

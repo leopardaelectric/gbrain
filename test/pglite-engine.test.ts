@@ -1469,6 +1469,23 @@ describe('PGLiteEngine: getHealth graph metrics', () => {
     expect(h.timeline_coverage).toBeNull();
   });
 
+  test('link_coverage and timeline_coverage ignore Slack identity glue pages', async () => {
+    await engine.putPage('people/slack-bot', { ...testPage, type: 'person', title: 'GitHub' });
+    await engine.addTag('people/slack-bot', 'bot');
+    await engine.addTag('people/slack-bot', 'slack-user');
+    await engine.putPage('people/slack-human', { ...testPage, type: 'person', title: 'Slack Human' });
+    await engine.addTag('people/slack-human', 'slack-user');
+
+    await engine.addLink('people/alice', 'companies/acme', '', 'works_at');
+    await engine.addTimelineEntry('people/alice', { date: '2026-01-15', summary: 'Joined' });
+    await engine.addLink('people/bob', 'people/slack-bot', '', 'mentions');
+    await engine.addTimelineEntry('people/slack-bot', { date: '2026-01-16', summary: 'Bot event' });
+
+    const h = await engine.getHealth();
+    expect(h.link_coverage).toBeCloseTo(1 / 4, 2);
+    expect(h.timeline_coverage).toBeCloseTo(1 / 4, 2);
+  });
+
   test('most_connected lists top entities by link count', async () => {
     await engine.addLink('people/alice', 'companies/acme', '', 'works_at');
     await engine.addLink('people/bob', 'companies/acme', '', 'invested_in');

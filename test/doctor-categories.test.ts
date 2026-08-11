@@ -137,6 +137,10 @@ describe('categorizeCheck', () => {
     expect(categorizeCheck('dangling_aliases')).toBe('brain');
   });
 
+  test('returns meta for onboard schema-pack upgrade checks surfaced by doctor', () => {
+    expect(categorizeCheck('pack_upgrade_available')).toBe('meta');
+  });
+
   test('returns the right category for a known skill name', () => {
     expect(categorizeCheck('resolver_health')).toBe('skill');
     expect(categorizeCheck('skill_conformance')).toBe('skill');
