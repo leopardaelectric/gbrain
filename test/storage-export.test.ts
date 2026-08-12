@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -146,6 +146,29 @@ describe('export --restore-only resolution chain (D5)', () => {
     await tryRunExport(['--dir', outDir]);
     expect(exitCode).toBeNull();
     expect(stdout.some((line) => line.includes('Exporting 0'))).toBe(true);
+  });
+
+  test('regular export can scope pages to one source', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('team-brain', 'Team Brain')`,
+    );
+    await engine.putPage('notes/default-only', {
+      type: 'note',
+      title: 'Default only',
+      compiled_truth: 'default body',
+    });
+    await engine.putPage('notes/team-only', {
+      type: 'note',
+      title: 'Team only',
+      compiled_truth: 'team body',
+    }, { sourceId: 'team-brain' });
+
+    await tryRunExport(['--dir', outDir, '--source-id', 'team-brain']);
+
+    expect(exitCode).toBeNull();
+    expect(stdout.some((line) => line.includes('Exporting 1'))).toBe(true);
+    expect(existsSync(join(outDir, 'notes', 'team-only.md'))).toBe(true);
+    expect(existsSync(join(outDir, 'notes', 'default-only.md'))).toBe(false);
   });
 });
 
