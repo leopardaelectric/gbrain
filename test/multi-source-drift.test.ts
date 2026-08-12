@@ -23,6 +23,7 @@ import { tmpdir } from 'os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runSources } from '../src/commands/sources.ts';
 import { findMisroutedPages, resolveDriftWalkOptionsFromEnv } from '../src/core/multi-source-drift.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 const TMP_ROOTS: string[] = [];
@@ -172,22 +173,16 @@ describe('findMisroutedPages — heuristic correctness', () => {
     expect(result.sample[0].slug).toBe('topics/mdx-page');
   });
 
-  test('case 8: GBRAIN_DRIFT_LIMIT and GBRAIN_DRIFT_TIMEOUT_MS override walk bounds', () => {
-    const originalLimit = process.env.GBRAIN_DRIFT_LIMIT;
-    const originalTimeout = process.env.GBRAIN_DRIFT_TIMEOUT_MS;
-    try {
-      process.env.GBRAIN_DRIFT_LIMIT = '50000';
-      process.env.GBRAIN_DRIFT_TIMEOUT_MS = '60000';
+  test('case 8: GBRAIN_DRIFT_LIMIT and GBRAIN_DRIFT_TIMEOUT_MS override walk bounds', async () => {
+    await withEnv({
+      GBRAIN_DRIFT_LIMIT: '50000',
+      GBRAIN_DRIFT_TIMEOUT_MS: '60000',
+    }, () => {
       expect(resolveDriftWalkOptionsFromEnv()).toEqual({
         limit: 50000,
         timeoutMs: 60000,
       });
-    } finally {
-      if (originalLimit === undefined) delete process.env.GBRAIN_DRIFT_LIMIT;
-      else process.env.GBRAIN_DRIFT_LIMIT = originalLimit;
-      if (originalTimeout === undefined) delete process.env.GBRAIN_DRIFT_TIMEOUT_MS;
-      else process.env.GBRAIN_DRIFT_TIMEOUT_MS = originalTimeout;
-    }
+    });
   });
 
   test('case 9: default doctor walk bounds cover normal source repos without env tuning', () => {
