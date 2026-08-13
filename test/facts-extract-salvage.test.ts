@@ -5,6 +5,7 @@ import {
   type ChatResult,
 } from '../src/core/ai/gateway.ts';
 import { extractFactsFromTurnWithOutcome } from '../src/core/facts/extract.ts';
+import { BudgetExhausted } from '../src/core/budget/budget-tracker.ts';
 
 afterEach(() => {
   __setChatTransportForTests(null);
@@ -35,6 +36,14 @@ async function extract() {
 }
 
 describe('facts extractor candidate salvage (#3866)', () => {
+  test('propagates BudgetExhausted instead of disguising it as provider_error', async () => {
+    __setChatTransportForTests(async () => {
+      throw new BudgetExhausted('cap hit', { reason: 'cost', spent: 5, cap: 5 });
+    });
+
+    await expect(extract()).rejects.toBeInstanceOf(BudgetExhausted);
+  });
+
   test('keeps valid facts when another candidate is malformed', async () => {
     stubFacts([
       {

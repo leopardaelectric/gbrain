@@ -2239,32 +2239,8 @@ export async function registerBuiltinHandlers(
               : 0,
           }
         : undefined,
-    });
+    }, job.signal);
 
-    const autoContinue = job.data.autoContinue === true;
-    const nextCursor = result.next_cursor ?? null;
-    const shouldContinue =
-      autoContinue &&
-      nextCursor != null &&
-      !result.budget_exhausted &&
-      job.data.slug == null &&
-      !job.data.dryRun;
-    if (shouldContinue) {
-      const { MinionQueue } = await import('../core/minions/queue.ts');
-      const queue = new MinionQueue(engine);
-      const nextParams = {
-        ...job.data,
-        pageCursor: nextCursor,
-        sliceNonce: `slice:${job.id}`,
-      };
-      await queue.add(
-        'extract-conversation-facts',
-        nextParams,
-        {
-          idempotency_key: `extract-conversation-facts:${sourceId}:slice:${nextCursor.typeIndex}:${nextCursor.offset}:${job.id}`,
-        },
-      );
-    }
     return result;
   });
 

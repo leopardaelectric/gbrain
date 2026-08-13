@@ -44,6 +44,8 @@ beforeAll(async () => {
     { slug: 'companies/stripe', title: 'Stripe', type: 'company' },
     { slug: 'companies/stripe-atlas', title: 'Stripe Atlas', type: 'company' },
     { slug: 'companies/benton-capital', title: 'Benton Capital', type: 'company' },
+    { slug: 'default/companies/vammo', title: 'Vammo', type: 'company' },
+    { slug: 'projects/ms-ims', title: 'IMS', type: 'project' },
     {
       slug: 'default/sources/github/repo-brain/example/fw-ble-detector/readme',
       title: 'README',
@@ -64,6 +66,11 @@ beforeAll(async () => {
       frontmatter: { type: p.type, title: p.title, slug: p.slug },
     }, { sourceId: 'default' });
   }
+
+  await engine.setPageAliases('default/companies/vammo', 'default', ['vammo']);
+  await engine.setPageAliases('projects/ms-ims', 'default', ['ims']);
+  await engine.setPageAliases('people/bob-example', 'default', ['bobby']);
+  await engine.setPageAliases('people/bob-rosenstein', 'default', ['bobby']);
 
   // Give alice-example 10 chunks (single match, ensures it's the resolved target)
   const alicePage = await engine.executeRaw<{ id: string }>(
@@ -116,6 +123,21 @@ afterAll(async () => {
 });
 
 describe('resolveEntitySlug — prefix expansion', () => {
+  it('resolves a bare company through an unambiguous page alias', async () => {
+    const result = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'Vammo');
+    expect(result).toBe('default/companies/vammo');
+  });
+
+  it('resolves a single-token project acronym through an unambiguous page alias', async () => {
+    const result = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'IMS');
+    expect(result).toBe('projects/ms-ims');
+  });
+
+  it('refuses to guess when a page alias is ambiguous', async () => {
+    const result = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'Bobby');
+    expect(result).toBe('bobby');
+  });
+
   it('resolves "Alice" to people/alice-example', async () => {
     const result = await resolveEntitySlug(engine as unknown as BrainEngine, 'default', 'Alice');
     expect(result).toBe('people/alice-example');
@@ -246,6 +268,15 @@ describe('resolveEntitySlugWithSource — exact_page branch', () => {
 });
 
 describe('resolveEntitySlugWithSource — fuzzy_match branch', () => {
+  it('tags an unambiguous page-alias resolution as a real-page fuzzy match', async () => {
+    const result = await resolveEntitySlugWithSource(
+      engine as unknown as BrainEngine,
+      'default',
+      'IMS',
+    );
+    expect(result).toEqual({ slug: 'projects/ms-ims', source: 'fuzzy_match' });
+  });
+
   it('returns fuzzy_match for a Title-cased display name', async () => {
     const result = await resolveEntitySlugWithSource(
       engine as unknown as BrainEngine,
@@ -343,6 +374,21 @@ describe('resolveEntitySlugWithSource — fallback_slugify branch', () => {
     );
     expect(result!.slug).toBe('jose-garcia');
     expect(result!.source).toBe<ResolutionSource>('fallback_slugify');
+  });
+});
+
+describe('resolveEntitySlug — pre-page_aliases fail-open', () => {
+  it('continues through the existing resolver chain when alias lookup throws', async () => {
+    const legacyEngine = {
+      resolveAliases: async () => {
+        throw new Error('relation "page_aliases" does not exist');
+      },
+      executeRaw: async () => [],
+    } as unknown as BrainEngine;
+
+    await expect(resolveEntitySlug(legacyEngine, 'default', 'Unknown Entity')).resolves.toBe(
+      'unknown-entity',
+    );
   });
 });
 
