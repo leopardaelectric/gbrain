@@ -22,6 +22,7 @@
  */
 
 import type { BrainEngine } from '../engine.ts';
+import { normalizeAlias } from '../search/alias-normalize.ts';
 
 /**
  * Canonicalize a free-form entity reference to a page slug.
@@ -55,7 +56,14 @@ export async function resolveEntitySlug(
     if (exact) return exact;
   }
 
-  // 2. Structured path match. Imported repository/project pages commonly
+  // 2. Alias-first canonicalization. `page_aliases` is the authoritative
+  // free-text identity layer; only a single hit is safe to resolve. Older
+  // brains may not have the table yet, so lookup failure falls through to
+  // the established structured/prefix/fuzzy chain.
+  const aliased = await tryUnambiguousAlias(engine, source_id, trimmed);
+  if (aliased) return aliased;
+
+  // 3. Structured path match. Imported repository/project pages commonly
   // live below a long source prefix and carry an unhelpful title such as
   // "README". Resolve an exact path segment before generic fuzzy scoring.
   const structured = await tryStructuredPathMatch(engine, source_id, trimmed);
@@ -154,6 +162,9 @@ export async function resolveEntitySlugWithSource(
     if (exact) return { slug: exact, source: 'exact_page' };
   }
 
+  const aliased = await tryUnambiguousAlias(engine, source_id, trimmed);
+  if (aliased) return { slug: aliased, source: 'fuzzy_match' };
+
   const structured = await tryStructuredPathMatch(engine, source_id, trimmed);
   if (structured) return { slug: structured, source: 'fuzzy_match' };
 
@@ -166,6 +177,22 @@ export async function resolveEntitySlugWithSource(
   }
 
   return { slug: fallbackSlugify(trimmed), source: 'fallback_slugify' };
+}
+
+async function tryUnambiguousAlias(
+  engine: BrainEngine,
+  source_id: string,
+  raw: string,
+): Promise<string | null> {
+  const normalized = normalizeAlias(raw);
+  if (!normalized) return null;
+  try {
+    const resolved = await engine.resolveAliases([normalized], { sourceId: source_id });
+    const hits = resolved.get(normalized);
+    return hits?.length === 1 ? hits[0].slug : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

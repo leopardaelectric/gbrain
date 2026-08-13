@@ -1958,8 +1958,7 @@ export async function runExtractConversationFacts(
         ? [parsed.sourceId]
         : (await listSources(engine)).map((s) => s.id);
       if (sourceIds.length <= 1) {
-        const shouldAutoContinue = !parsed.dryRun && parsed.slug == null && parsed.limit == null;
-        const backgroundLimit = shouldAutoContinue ? BACKGROUND_SLICE_LIMIT : parsed.limit;
+        const backgroundLimit = parsed.limit ?? BACKGROUND_SLICE_LIMIT;
         const backgrounded = await maybeBackground({
           engine,
           args: parsed.sourceId ? args : [...args, '--source-id', sourceIds[0] ?? 'default'],
@@ -1967,7 +1966,6 @@ export async function runExtractConversationFacts(
           paramBuilder: (jobArgs) => ({
             ...buildJobParams(jobArgs),
             limit: backgroundLimit,
-            ...(shouldAutoContinue ? { autoContinue: true } : {}),
           }),
         });
         if (backgrounded) return;
@@ -1976,20 +1974,18 @@ export async function runExtractConversationFacts(
         const queue = new MinionQueue(engine);
         const ids: number[] = [];
         const filteredArgs = args.filter((a) => a !== '--background' && a !== '--follow');
-        const shouldAutoContinue = !parsed.dryRun && parsed.slug == null && parsed.limit == null;
-        const backgroundLimit = shouldAutoContinue ? BACKGROUND_SLICE_LIMIT : parsed.limit;
+        const backgroundLimit = parsed.limit ?? BACKGROUND_SLICE_LIMIT;
         for (const sid of sourceIds) {
           const jobParams = {
             ...buildJobParams(filteredArgs),
             sourceId: sid,
             limit: backgroundLimit,
-            ...(shouldAutoContinue ? { autoContinue: true } : {}),
           };
           const job = await queue.add(
             'extract-conversation-facts',
             jobParams,
             {
-              idempotency_key: `extract-conversation-facts:${sid}:${filteredArgs.join(' ')}${backgroundLimit != null ? `:limit=${backgroundLimit}` : ''}${shouldAutoContinue ? ':auto-continue' : ''}`,
+              idempotency_key: `extract-conversation-facts:${sid}:${filteredArgs.join(' ')}:limit=${backgroundLimit}`,
             },
           );
           ids.push(job.id);

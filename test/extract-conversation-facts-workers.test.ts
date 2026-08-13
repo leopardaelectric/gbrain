@@ -159,16 +159,25 @@ describe('extract-conversation-facts — structural contracts (T5)', () => {
     expect(SRC).toMatch(/Submitted \${ids\.length} extract-conversation-facts job\(s\) \(one per source\)/);
   });
 
-  test('background runs default to sliced batches and auto-continue the chain', () => {
+  test('background runs default to one bounded slice without resetting the budget', () => {
     expect(SRC).toMatch(/BACKGROUND_SLICE_LIMIT/);
-    expect(SRC).toMatch(/autoContinue:\s*true/);
     expect(SRC).toMatch(/limit:\s*backgroundLimit/);
-    expect(JOBS_SRC).toMatch(/const shouldContinue =/);
-    expect(JOBS_SRC).toMatch(/sliceNonce:\s*`slice:\$\{job\.id\}`/);
+    expect(SRC).not.toMatch(/autoContinue:\s*true/);
+    expect(JOBS_SRC).not.toMatch(/const shouldContinue =/);
+    expect(JOBS_SRC).not.toMatch(/sliceNonce:\s*`slice:\$\{job\.id\}`/);
     expect(SRC).toMatch(/next_cursor/);
     expect(JOBS_SRC).toMatch(/pageCursor:\s*job\.data\.pageCursor/);
     expect(SRC).toMatch(/offset = nextOffset/);
     expect(SRC).not.toMatch(/offset \+= batch\.length/);
+  });
+
+  test('Minion handler propagates job cancellation into the extraction core', () => {
+    const handlerStart = JOBS_SRC.indexOf(
+      "registerBuiltinJob(worker, engine, 'extract-conversation-facts'",
+    );
+    expect(handlerStart).toBeGreaterThan(-1);
+    const handlerBlock = JOBS_SRC.slice(handlerStart, handlerStart + 5000);
+    expect(handlerBlock).toMatch(/runExtractConversationFactsCore\([\s\S]*?},\s*job\.signal\s*\)/);
   });
 
   test('parseArgs accepts background/follow flags without rejecting them', () => {

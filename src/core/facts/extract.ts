@@ -28,6 +28,7 @@ import { resolveModel } from '../model-config.ts';
 import { normalizeModelId } from '../model-id.ts';
 import type { BrainEngine, NewFact, FactKind } from '../engine.ts';
 import { normalizeMetricLabel } from './extract-from-fence.ts';
+import { BudgetExhausted } from '../budget/budget-tracker.ts';
 
 /**
  * v0.31 (D15): kill-switch for fact extraction.
@@ -295,7 +296,7 @@ export async function extractFactsFromTurnWithOutcome(
   } catch (err) {
     // Re-throw aborts. Strict callers receive a failure outcome; the historical
     // wrapper below converts that outcome to [] for best-effort call sites.
-    if (isAbort(err)) throw err;
+    if (isAbort(err) || err instanceof BudgetExhausted) throw err;
     return { ok: false, reason: 'provider_error', error: err };
   }
 
