@@ -65,6 +65,10 @@ describe('CANONICAL_PRICING — table integrity', () => {
   test('GPT-5.6 Luna uses the current canonical rates', () => {
     expect(CANONICAL_PRICING['openai:gpt-5.6-luna']).toEqual({ input: 1, output: 6 });
   });
+
+  test('GPT-5.6 Terra uses the current canonical rates', () => {
+    expect(CANONICAL_PRICING['openai:gpt-5.6-terra']).toEqual({ input: 2.5, output: 15 });
+  });
 });
 
 describe('canonicalLookup — id normalization', () => {

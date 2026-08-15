@@ -293,7 +293,6 @@ export async function extractFactsFromTurnWithOutcome(
   // round-trips per gated page write.
   const model = input.model ?? await getFactsExtractionModel(input.engine);
   const maxTokens = await getFactsExtractionMaxTokens(input.engine);
-
   if (!isAvailable('chat', model)) {
     // No servable chat model → no extraction. Caller still inserts facts via
     // agent-authored `## Facts` fences and the `remember` verb.

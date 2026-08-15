@@ -24,6 +24,7 @@ import {
   isAvailable,
   resetGateway,
   __setChatTransportForTests,
+  __setGenerateTextTransportForTests,
   getChatModel,
 } from '../src/core/ai/gateway.ts';
 import { extractFactsFromTurn } from '../src/core/facts/extract.ts';
@@ -31,6 +32,7 @@ import { extractFactsFromTurn } from '../src/core/facts/extract.ts';
 beforeEach(() => {
   resetGateway();
   __setChatTransportForTests(null);
+  __setGenerateTextTransportForTests(null);
 });
 
 // Shard hygiene: this file's tests each configureGateway WITHOUT
@@ -45,6 +47,7 @@ beforeEach(() => {
 // legacy pin on exit.
 afterAll(() => {
   __setChatTransportForTests(null);
+  __setGenerateTextTransportForTests(null);
   configureGateway({
     embedding_model: 'openai:text-embedding-3-large',
     embedding_dimensions: 1536,
@@ -145,6 +148,39 @@ describe('facts extract — silent-no-op regression (v0.31.6 bug class)', () => 
       source: 'test:smoking-gun',
     });
     expect(chatCalled).toBe(true);  // ← THE bug-class assertion
+  });
+
+  test('facts.extraction_model registers a config-selected OpenAI chat model', async () => {
+    configureGateway({
+      chat_model: 'openai:gpt-5.6-luna',
+      env: { OPENAI_API_KEY: 'sk-test' },
+    });
+
+    const generatedModels: string[] = [];
+    __setGenerateTextTransportForTests((async (opts: { model?: { modelId?: string } }) => {
+      generatedModels.push(`openai:${opts.model?.modelId ?? '<missing>'}`);
+      return {
+        text: '{"facts":[]}',
+        content: [{ type: 'text', text: '{"facts":[]}' }],
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+        providerMetadata: {},
+      };
+    }) as never);
+
+    const engine = {
+      getConfig: async (key: string) => key === 'facts.extraction_model'
+        ? 'openai:gpt-5.6-terra'
+        : null,
+    };
+
+    await extractFactsFromTurn({
+      turnText: 'Routing validation only.',
+      source: 'test:config-selected-facts-model',
+      engine: engine as never,
+    });
+
+    expect(generatedModels).toEqual(['openai:gpt-5.6-terra']);
   });
 });
 
