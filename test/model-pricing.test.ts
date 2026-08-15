@@ -61,6 +61,10 @@ describe('CANONICAL_PRICING — table integrity', () => {
       CANONICAL_PRICING['google:gemini-2.0-flash'],
     );
   });
+
+  test('GPT-5.6 Luna uses the current canonical rates', () => {
+    expect(CANONICAL_PRICING['openai:gpt-5.6-luna']).toEqual({ input: 1, output: 6 });
+  });
 });
 
 describe('canonicalLookup — id normalization', () => {

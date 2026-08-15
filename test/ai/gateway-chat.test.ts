@@ -74,6 +74,10 @@ describe('chat touchpoint — recipe registry', () => {
 });
 
 describe('expansion — structured-output capability gating', () => {
+  test('OpenAI accepts GPT-5.6 Luna for query expansion', () => {
+    expect(() => assertTouchpoint(getRecipe('openai')!, 'expansion', 'gpt-5.6-luna')).not.toThrow();
+  });
+
   test('openai-compat chat recipes default to no structured-output support', () => {
     // The capability is opt-in per recipe: an openai-compatible recipe may front
     // arbitrary backends, so expand() routes the default through the schemaless
@@ -163,6 +167,7 @@ describe('chat touchpoint — model resolver + aliases (Codex F-OV-5)', () => {
   test('assertTouchpoint accepts chat for chat-capable native + openai-compat providers', () => {
     expect(() => assertTouchpoint(getRecipe('anthropic')!, 'chat', 'claude-opus-4-7')).not.toThrow();
     expect(() => assertTouchpoint(getRecipe('openai')!, 'chat', 'gpt-5.2')).not.toThrow();
+    expect(() => assertTouchpoint(getRecipe('openai')!, 'chat', 'gpt-5.6-luna')).not.toThrow();
     expect(() => assertTouchpoint(getRecipe('openai')!, 'chat', 'gpt-5.6-sol')).not.toThrow();
     expect(() => assertTouchpoint(getRecipe('google')!, 'chat', 'gemini-2.0-flash')).not.toThrow();
     expect(() => assertTouchpoint(getRecipe('deepseek')!, 'chat', 'deepseek-v4-flash')).not.toThrow();
