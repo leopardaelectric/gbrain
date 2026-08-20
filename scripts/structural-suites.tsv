@@ -20,6 +20,8 @@ test/autopilot-pause-marker.test.ts	pause marker fences minion job pickup	1	read
 test/autopilot-self-upgrade.test.ts	autopilot self-upgrade static-shape regressions	4	readFileSync
 test/autopilot-shutdown-engine-close.test.ts	autopilot.ts graceful engine shutdown (#1872)	4	readFileSync
 test/autopilot-supervisor-wiring.test.ts	autopilot.ts ↔ ChildWorkerSupervisor wiring	6	readFileSync
+test/autopilot-timeout.test.ts	conversation facts cycle bounds	2	readFileSync
+test/autopilot-timeout.test.ts	fatal reconnect shutdown	1	readFileSync
 test/backlinks-job-default.test.ts	backlinks Minion handler — empty payload defaults to check, not fix	3	readFileSync
 test/book-mirror.test.ts	gbrain book-mirror — source file invariants	7	readFileSync
 test/bootstrap-codex-door.test.ts	Codex door — rendered AGENTS.md pull protocol (Gate 3)	2	readFileSync
@@ -43,6 +45,7 @@ test/claude-cli-recipe.test.ts	claude-cli LanguageModel — text-only round trip
 test/claude-cli-recipe.test.ts	claude-cli LanguageModel — tool use	11	readFileSync
 test/claude-cli-recipe.test.ts	claude-cli recipe registration	2	readFileSync
 test/cli-force-exit-teardown-arming.test.ts	cli.ts — disconnect hard-deadline armed at teardown entry, not before the op body	1	readFileSync
+test/cli-options.test.ts	maybeBackground retry behavior	1	readFileSync
 test/cli.test.ts	BigInt-safe output normalization (#2450)	5	readFileSync
 test/cli.test.ts	CLI structure	6	readFileSync
 test/cli.test.ts	CLI version	2	readFileSync
@@ -86,6 +89,7 @@ test/doctor-supervisor-singleton-pidfile.test.ts	doctor supervisor_singleton —
 test/doctor-volunteer-channels.test.ts	checkVolunteerChannels	9	doctor-source-helper,readFileSync
 test/doctor-wedged-queue.test.ts	issue #1801 fix #3 — remote queue_health state→status regression	1	doctor-source-helper
 test/doctor.test.ts	BUG 4 — in-progress sync via live lock, not stale freshness	8	doctor-source-helper
+test/doctor.test.ts	Vammo doctor stability regressions	2	doctor-source-helper
 test/doctor.test.ts	doctor command	32	doctor-source-helper
 test/doctor.test.ts	issue #972 — link_resolution_opportunity check	8	doctor-source-helper
 test/doctor.test.ts	stub_guard_24h check (v0.34.5)	5	doctor-source-helper
@@ -116,6 +120,8 @@ test/eval-brainbench-e2e.test.ts	run-all once-per-sweep semantics (decision 16)	
 test/exit-classification.test.ts	consumer wire-up — helper used by all 3 sites (no inline filters left)	5	doctor-source-helper,readFileSync
 test/extract-atoms-drain.test.ts	extract-atoms-drain Minion handler retries on provider_failure (issue #3218)	2	readFileSync
 test/extract-atoms-drain.test.ts	shared wiring helper holds the cycle lock (5A)	2	readFileSync
+test/extract-conversation-facts-workers.test.ts	extract-conversation-facts — Result type carries new counters	2	readFileSync
+test/extract-conversation-facts-workers.test.ts	extract-conversation-facts — structural contracts (T5)	16	readFileSync
 test/extract-workers.test.ts	extract.ts → workers wiring (T7)	10	readFileSync
 test/features.test.ts	CLI routing	2	bun-file
 test/filing-rules-resolution.serial.test.ts	per-source filing-rules resolution	3	readFileSync

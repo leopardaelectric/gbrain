@@ -268,13 +268,13 @@ describe('resolveEntitySlugWithSource — exact_page branch', () => {
 });
 
 describe('resolveEntitySlugWithSource — fuzzy_match branch', () => {
-  it('tags an unambiguous page-alias resolution as a real-page fuzzy match', async () => {
+  it('tags an unambiguous page-alias resolution as alias_exact', async () => {
     const result = await resolveEntitySlugWithSource(
       engine as unknown as BrainEngine,
       'default',
       'IMS',
     );
-    expect(result).toEqual({ slug: 'projects/ms-ims', source: 'fuzzy_match' });
+    expect(result).toEqual({ slug: 'projects/ms-ims', source: 'alias_exact' });
   });
 
   it('returns fuzzy_match for a Title-cased display name', async () => {

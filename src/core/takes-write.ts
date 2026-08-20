@@ -456,7 +456,7 @@ export async function updateTakeOnPage(
     // base columns only, resolution columns preserved by the DO UPDATE list.
     let mirrorWarning: string | undefined;
     try {
-      await target.engine.addTakesBatch([toBatchInput(pageId, updated)]);
+      await target.engine.addTakesBatch([toBatchInput(pageId, updated)]); // gbrain-allow-direct-insert: mirror canonical Markdown take edit into the derived table
     } catch (err) {
       mirrorWarning = mirrorErrorMessage(err); // P1-4/F4: md written; DB mirror deferred to reconcile.
     }
@@ -524,7 +524,7 @@ export async function supersedeTakeOnPage(
     if (newAfter) mirrorRows.push(toBatchInput(pageId, newAfter, null));
     let mirrorWarning: string | undefined;
     try {
-      await target.engine.addTakesBatch(mirrorRows);
+      await target.engine.addTakesBatch(mirrorRows); // gbrain-allow-direct-insert: mirror canonical Markdown supersession into the derived table
     } catch (err) {
       mirrorWarning = mirrorErrorMessage(err); // P1-4/F4: md written; DB mirror deferred to reconcile.
     }
@@ -607,7 +607,7 @@ export async function resolveTakeOnPage(
     } catch (err) {
       if (err instanceof Error && err.message.includes('TAKE_ROW_NOT_FOUND')) {
         try {
-          await target.engine.addTakesBatch([toBatchInput(pageId, targetRow)]);
+          await target.engine.addTakesBatch([toBatchInput(pageId, targetRow)]); // gbrain-allow-direct-insert: self-heal a missing derived row from canonical Markdown
           await target.engine.resolveTake(pageId, rowNum, resolveArgs);
         } catch (healErr) {
           mirrorWarning = mirrorErrorMessage(healErr);

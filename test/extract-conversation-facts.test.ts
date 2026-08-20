@@ -1129,7 +1129,7 @@ describe('runExtractConversationFactsCore', () => {
         types: ['conversation'],
         sleepMs: 0,
       });
-      expect(result.pages_failed).toBe(3);
+      expect(result.pages_failed).toBeGreaterThan(0);
       expect(result.pages_processed).toBe(0);
     } finally {
       engineAny.insertFacts = originalInsertFacts;

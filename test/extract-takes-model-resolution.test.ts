@@ -11,6 +11,9 @@
  *   idiom) — NOT the DB config plane (engine.getConfig('chat_model')).
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import {
   configureGateway,
@@ -20,21 +23,27 @@ import {
 import { extractTakesFromPages } from '../src/core/extract-takes-from-pages.ts';
 
 let engine: PGLiteEngine;
+let brainDir: string;
 const seenModels: string[] = [];
 let pageN = 0;
 
 /** Each test seeds a fresh uncovered page so the extraction loop fires. */
 async function seedPage(): Promise<void> {
   const body = 'An opinion-bearing body long enough to clear the 200-char eligibility floor. '.repeat(5);
-  await engine.putPage(`concepts/model-resolution-${pageN++}`, {
+  const slug = `concepts/model-resolution-${pageN++}`;
+  await engine.putPage(slug, {
     type: 'concept', title: `M${pageN}`, compiled_truth: body, frontmatter: {},
   });
+  writeFileSync(join(brainDir, `${slug}.md`), body);
 }
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-takes-model-'));
+  mkdirSync(join(brainDir, 'concepts'), { recursive: true });
+  await engine.setConfig('sync.repo_path', brainDir);
 
   __setChatTransportForTests(async (opts) => {
     seenModels.push(opts.model ?? '(unset)');
@@ -53,6 +62,7 @@ afterAll(async () => {
   __setChatTransportForTests(null);
   resetGateway();
   await engine.disconnect();
+  rmSync(brainDir, { recursive: true, force: true });
 });
 
 beforeEach(() => {

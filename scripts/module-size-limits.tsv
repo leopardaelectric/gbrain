@@ -3,22 +3,22 @@
 # Raising a ceiling is a conscious, reviewer-visible act. Lower ceilings in
 # the same commit as any peel (the guard fails on >50 lines of stale slack).
 # Columns: path	max_lines	policy	note
-src/commands/doctor.ts	4291	ratchet	peel target: containment sprint C8-C13; grown v0.46.x keyless not_configured state
+src/commands/doctor.ts	4330	ratchet	peel target: containment sprint C8-C13; grown v0.46.x + Vammo aggregate health checks
 src/core/operations.ts	303	ratchet	peel target: containment sprint C4-C7
-src/core/postgres-engine.ts	5837	ratchet	grown v0.46.23.0: putPage empty-overwrite guard (#4335)
-src/core/pglite-engine.ts	5881	ratchet	grown v0.46.23.0: putPage empty-overwrite guard (#4335)
+src/core/postgres-engine.ts	5851	ratchet	grown v0.46.23.0 + Vammo fact-health source filtering
+src/core/pglite-engine.ts	5895	ratchet	grown v0.46.23.0 + Vammo fact-health source filtering
 src/core/migrate.ts	668	region-exempt	append-only MIGRATIONS array grows freely; runner logic is ratcheted
 src/commands/sync.ts	4311	ratchet	grown v0.46.22.0 phone wave: github source kind (#4104)
 src/core/ai/gateway.ts	4428	ratchet	watchlist; merged: dream-wave turn permits + key-aware effective-model reconfigure + env-only worker refresh + discovery endpoint-trust docstring
-src/cli.ts	3486	ratchet	grown v0.46.23.0: awaited stdout delivery (#3423)
-src/core/cycle.ts	3080	ratchet	grown v0.46.20.0 phase-boundary split (resolveCyclePhases + normalizeQueuedSourcePhases + deriveStatus exclusion filter)
+src/cli.ts	3487	ratchet	grown v0.46.23.0 + Vammo source-scoped export flag
+src/core/cycle.ts	3086	ratchet	grown v0.46.20.0 + Vammo bounded conversation-facts cycle controls
 src/commands/serve-http.ts	3194	ratchet	grown v0.46.23.0 review fix wave: github-kind webhook gating + case-insensitive repo match
-src/commands/jobs.ts	3027	ratchet	grown v0.46.22.0 phone wave: github source sync job (#4104)
+src/commands/jobs.ts	3038	ratchet	grown v0.46.22.0 + Vammo bounded extraction job handling
 src/core/search/hybrid.ts	2629	ratchet	grown v0.46.23.0 review fix wave: supersede scoping + edge-existence gate
-src/core/engine.ts	2351	ratchet	grown v0.46.23.0: putPage allowEmptyOverwrite contract (#4335)
-src/commands/autopilot.ts	2301	ratchet
-src/commands/extract.ts	2161	ratchet
-src/commands/extract-conversation-facts.ts	2045	ratchet	grown v0.46.x per-provider gateway-unavailable copy
+src/core/engine.ts	2352	ratchet	grown v0.46.23.0 + Vammo fact health aggregation contract
+src/commands/autopilot.ts	2354	ratchet	grown for Vammo lock takeover, timeout, and shutdown hardening
+src/commands/extract.ts	2209	ratchet	grown for Vammo bounded background extraction
+src/commands/extract-conversation-facts.ts	2261	ratchet	grown v0.46.x + Vammo bounded background extraction and terminal audit handling
 src/core/import-file.ts	2000	ratchet	grown v0.46.11.0 five-issue wave
 src/core/cycle/synthesize.ts	2702	ratchet	merged: five-issue wave + dream-wave C7 peel + C8 manifest + C9 mode/telemetry/backfill + adversarial fix batches
 src/commands/embed.ts	1963	ratchet

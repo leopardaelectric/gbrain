@@ -69,7 +69,7 @@ export type BackgroundWorkDrainMode = 'exit' | 'disconnect';
 export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 /** Per-sink bound for one drain pass (the `runDrainers` default below). */
-export const SINK_DRAIN_TIMEOUT_MS = 2000;
+export const SINK_DRAIN_TIMEOUT_MS = 8000;
 
 /**
  * #4143/#4284 — the in-loop bound for PGlite.close() inside disconnect().

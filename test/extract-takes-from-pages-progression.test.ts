@@ -13,6 +13,9 @@
  * includeCovered restores the full rescan (refresh semantics).
  */
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import {
   configureGateway,
@@ -22,11 +25,15 @@ import {
 import { extractTakesFromPages } from '../src/core/extract-takes-from-pages.ts';
 
 let engine: PGLiteEngine;
+let brainDir: string;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
+  brainDir = mkdtempSync(join(tmpdir(), 'gbrain-takes-progression-'));
+  mkdirSync(join(brainDir, 'concepts'), { recursive: true });
+  await engine.setConfig('sync.repo_path', brainDir);
 
   configureGateway({
     chat_model: 'anthropic:claude-haiku-4-5-20251001',
@@ -48,12 +55,15 @@ beforeAll(async () => {
   await engine.putPage('concepts/progression-b', {
     type: 'concept', title: 'B', compiled_truth: body, frontmatter: {},
   });
+  writeFileSync(join(brainDir, 'concepts', 'progression-a.md'), body);
+  writeFileSync(join(brainDir, 'concepts', 'progression-b.md'), body);
 });
 
 afterAll(async () => {
   __setChatTransportForTests(null);
   resetGateway();
   await engine.disconnect();
+  rmSync(brainDir, { recursive: true, force: true });
 });
 
 describe('extractTakesFromPages — bootstrap progression', () => {
@@ -74,6 +84,7 @@ describe('extractTakesFromPages — bootstrap progression', () => {
     await engine.putPage('concepts/progression-c', {
       type: 'concept', title: 'C', compiled_truth: body, frontmatter: {},
     });
+    writeFileSync(join(brainDir, 'concepts', 'progression-c.md'), body);
     const r3 = await extractTakesFromPages(engine, { bootstrapEnabled: true, maxPages: 50 });
     expect(r3.pages_scanned).toBe(1);
   });

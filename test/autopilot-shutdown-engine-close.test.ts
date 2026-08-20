@@ -55,9 +55,10 @@ describe('autopilot.ts graceful engine shutdown (#1872)', () => {
     expect(AUTOPILOT_SRC).toMatch(/inflightInlineCycle\s*=\s*cyclePromise/);
   });
 
-  it('shutdown() awaits closeEngine() before process.exit(0) (SIGINT + internal-stop path)', () => {
+  it('shutdown() awaits closeEngine() before exiting with its requested code', () => {
+    expect(AUTOPILOT_SRC).toContain('const shutdown = async (sig: string, exitCode = 0)');
     expect(AUTOPILOT_SRC).toMatch(
-      /await closeEngine\(\);[\s\S]{0,400}process\.exit\(0\)/,
+      /await closeEngine\(\);[\s\S]{0,400}process\.exit\(exitCode\)/,
     );
   });
 });

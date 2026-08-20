@@ -151,8 +151,10 @@ describe('check-resolvable — unit: resolveSkillsDir', () => {
     // with mocked env to suppress the install-path success.
     const empty = mkdtempSync(join(tmpdir(), 'empty-for-resolve-'));
     const original = process.cwd();
+    const originalHome = process.env.HOME;
     try {
       process.chdir(empty);
+      process.env.HOME = empty;
       const r = resolveSkillsDir({ help: false, json: false, fix: false, dryRun: false, verbose: false, strict: false, skillsDir: null });
       // Install-path fallback succeeds when test runs inside the gbrain repo.
       expect(r.error).toBeNull();
@@ -160,6 +162,8 @@ describe('check-resolvable — unit: resolveSkillsDir', () => {
       expect(r.dir).toMatch(/[\\/]skills$/);
       expect(r.source).toBe('install_path');
     } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
       process.chdir(original);
       rmSync(empty, { recursive: true, force: true });
     }
@@ -391,7 +395,7 @@ describe('gbrain check-resolvable CLI — integration', () => {
       // Pass --fix; expect refusal exit + clear error message.
       const r = spawnSync('bun', ['run', CLI, 'check-resolvable', '--fix'], {
         cwd: empty,
-        env: { ...process.env, OPENCLAW_WORKSPACE: '', GBRAIN_SKILLS_DIR: '' },
+        env: { ...process.env, HOME: empty, OPENCLAW_WORKSPACE: '', GBRAIN_SKILLS_DIR: '' },
         encoding: 'utf-8',
       });
       expect(r.status).toBe(1);

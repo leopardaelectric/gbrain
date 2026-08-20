@@ -37,7 +37,7 @@ beforeAll(async () => {
   // B (writes proj-widget): a world fact — the cross-agent continuity payload.
   await remember.handler(
     ctx({ remote: true, sourceId: 'proj-widget' }),
-    { fact: 'The payments provider decision is Stripe-shaped (test marker QQF1)', provenance: 'recall-federated test', visibility: 'world' },
+    { fact: 'The payments provider decision is Stripe-shaped (test marker QQF1)', provenance: 'recall-federated test', entity: 'decisions/payments-provider', visibility: 'world' },
   );
   // A private fact in proj-widget: must never cross to remote readers.
   await remember.handler(
@@ -196,7 +196,7 @@ describe('recall federated grants (D1b)', () => {
     const remember = operationsByName['remember'];
     await remember.handler(
       ctx({ remote: true, sourceId: 'aurora-workspace' }),
-      { fact: 'Pending marker QQF8', provenance: 'recall-federated test', visibility: 'world' },
+      { fact: 'Pending marker QQF8', provenance: 'recall-federated test', entity: 'workspaces/aurora', visibility: 'world' },
     );
     const a = await engine.countUnconsolidatedFacts('aurora-workspace');
     const b = await engine.countUnconsolidatedFacts('proj-widget');
