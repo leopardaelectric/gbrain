@@ -27,7 +27,8 @@
 
 - [ ] Count and skip directory-less slugs during dry-run and write runs.
 - [ ] Replace per-row updates with one `engine.transaction()` per page.
-- [ ] Before each stamp, query the target fence coordinate. Delete only an exact claim/source duplicate; throw on a non-matching occupant.
+- [ ] Before each stamp, query the target fence coordinate. Delete only an exact full-metadata duplicate; throw on a non-matching occupant.
+- [ ] Restore the original page when its database transaction fails.
 - [ ] Stamp the original legacy row after the target slot is clear.
 - [ ] Run `bun test test/migrations-v0_32_2.test.ts` and confirm all tests pass.
 
@@ -41,7 +42,8 @@
 - [ ] Add tests for added pages, modified pages, unchanged fence rows, and ambiguous row matches.
 - [ ] Run `bun test test/recover-v0322-partial-migration.test.ts` and confirm the tests fail before the helper exists.
 - [ ] Implement dry-run output with exact page, fence-row, reset, and duplicate-delete counts.
-- [ ] Implement `--write` in one database transaction, scoped to one source and content derived from the target commit. Preserve all later facts attached to pages created by the bad migration.
+- [ ] Implement `--write-db` in one locked database transaction, scoped to one source and content derived from the target commit.
+- [ ] Implement a separate `--write-files` phase that requires the database postcondition. Preserve all later facts attached to pages created by the bad migration.
 - [ ] Run the focused recovery tests and confirm they pass.
 
 ### Task 4: Verify and commit source changes
@@ -60,9 +62,9 @@
 **Files:**
 - Modify/delete only paths introduced or changed by brain commit `ceb49d1bc`.
 
-- [ ] Run the recovery helper without `--write` for source `mind-agent-brain` and commit `ceb49d1bc`; inspect all counts.
-- [ ] Run the helper with `--write`; verify the database transaction completed.
-- [ ] Remove the 462 pages created by commit `ceb49d1bc` and rewrite only the target facts on its 17 modified pages, without touching current unrelated worktree changes.
+- [ ] Run the recovery helper without a write flag for source `mind-agent-brain` and commit `ceb49d1bc`; inspect all counts.
+- [ ] Run the helper with `--write-db`; verify the database transaction completed.
+- [ ] Run the helper with `--write-files`; remove the 462 pages created by commit `ceb49d1bc` and rewrite only the target facts on its 17 modified pages, without touching current unrelated worktree changes.
 - [ ] Commit and push the scoped brain recovery.
 - [ ] Run a source-scoped sync and verify deleted ghost pages disappear from the database.
 

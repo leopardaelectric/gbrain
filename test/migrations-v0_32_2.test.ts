@@ -301,15 +301,45 @@ describe('phaseBFenceFacts — partial-run recovery', () => {
     expect(rows.rows.some((row: { id: number }) => row.id === duplicate.rows[0].id)).toBe(false);
   });
 
+  test('does not reclaim a same-claim occupant with different fence metadata', async () => {
+    const legacyId = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+    mkdirSync(join(brainDir, 'people'), { recursive: true });
+    let body = '---\ntype: person\ntitle: Alice\nslug: people/alice\n---\n\n# Alice\n';
+    body = upsertFactRow(body, {
+      claim: 'Founded Acme', kind: 'fact', confidence: 1,
+      visibility: 'world', notability: 'medium', validFrom: '2026-08-23',
+      source: 'mcp:put_page',
+    }).body;
+    writeFileSync(join(brainDir, 'people/alice.md'), body, 'utf-8');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const occupant = await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', 'people/alice', 'Founded Acme', 'fact', 'world', 'medium',
+               '2026-08-23', 'mcp:put_page', 1.0, 1, 'people/alice')
+       RETURNING id`,
+    );
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('complete');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query(
+      `SELECT id, visibility, row_num FROM facts WHERE entity_slug = 'people/alice' ORDER BY row_num`,
+    );
+    expect(rows.rows).toEqual([
+      { id: occupant.rows[0].id, visibility: 'world', row_num: 1 },
+      { id: legacyId, visibility: 'private', row_num: 2 },
+    ]);
+  });
+
   test('rolls back all page stamps when a fence slot has a different occupant', async () => {
     const firstId = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'First legacy fact' });
     const secondId = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Second legacy fact' });
     mkdirSync(join(brainDir, 'people'), { recursive: true });
-    writeFileSync(
-      join(brainDir, 'people/alice.md'),
-      pageWithFacts(['First legacy fact', 'Second legacy fact']),
-      'utf-8',
-    );
+    const filePath = join(brainDir, 'people/alice.md');
+    const originalBody = '---\ntype: person\ntitle: Alice\nslug: people/alice\n---\n\n# Alice\n';
+    writeFileSync(filePath, originalBody, 'utf-8');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (engine as any).db.query(
       `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
@@ -331,6 +361,7 @@ describe('phaseBFenceFacts — partial-run recovery', () => {
       { id: firstId, row_num: null },
       { id: secondId, row_num: null },
     ]);
+    expect(readFileSync(filePath, 'utf-8')).toBe(originalBody);
   });
 });
 

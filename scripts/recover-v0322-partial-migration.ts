@@ -6,6 +6,7 @@ import {
 import {
   FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence, renderFactsTable,
 } from '../src/core/facts-fence.ts';
+import type { FactKind, FactNotability, FactVisibility, ParsedFact } from '../src/core/facts-fence.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
 export interface RecoveryFactCoordinate {
@@ -13,6 +14,18 @@ export interface RecoveryFactCoordinate {
   rowNum: number;
   claim: string;
   source: string;
+  kind: FactKind;
+  confidence: number;
+  visibility: FactVisibility;
+  notability: FactNotability;
+  validFrom?: string;
+  validUntil?: string;
+  context?: string;
+  active: boolean;
+  claimMetric?: string;
+  claimValue?: number;
+  claimUnit?: string;
+  claimPeriod?: string;
 }
 
 export interface RecoveryManifest {
@@ -24,9 +37,22 @@ export interface RecoveryManifest {
 
 export interface RecoveryDbRow {
   id: string;
+  source_id: string;
   entity_slug: string | null;
   fact: string;
   source: string;
+  kind: FactKind;
+  confidence: number;
+  visibility: FactVisibility;
+  notability: FactNotability;
+  context: string | null;
+  valid_from: string | Date;
+  valid_until: string | Date | null;
+  expired_at: string | Date | null;
+  claim_metric: string | null;
+  claim_value: number | null;
+  claim_unit: string | null;
+  claim_period: string | null;
   row_num: number | null;
   source_markdown_slug: string | null;
 }
@@ -88,6 +114,18 @@ export function buildRecoveryManifest(repoPath: string, revision: string): Recov
         rowNum: fact.rowNum,
         claim: fact.claim,
         source: fact.source ?? '',
+        kind: fact.kind,
+        confidence: fact.confidence,
+        visibility: fact.visibility,
+        notability: fact.notability,
+        validFrom: fact.validFrom,
+        validUntil: fact.validUntil,
+        context: fact.context,
+        active: fact.active,
+        claimMetric: fact.claimMetric,
+        claimValue: fact.claimValue,
+        claimUnit: fact.claimUnit,
+        claimPeriod: fact.claimPeriod,
       });
     }
   }
@@ -102,16 +140,16 @@ export function buildRecoveryManifest(repoPath: string, revision: string): Recov
  * Build cleanup edits against the current tree, not the historical commit.
  * This preserves facts appended after the bad migration: whole ghost pages
  * are removed after their DB rows become legacy, while legitimate pages lose
- * only the claim/source rows introduced by the target commit.
+ * only the full-metadata rows introduced by the target commit.
  */
 export function buildFileRecovery(repoPath: string, manifest: RecoveryManifest): FileRecovery {
   const deletePaths = manifest.addedPages.filter(path => existsSync(`${repoPath}/${path}`));
   const rewrites: Array<{ path: string; body: string }> = [];
-  const factsByPage = new Map<string, Set<string>>();
+  const factsByPage = new Map<string, RecoveryFactCoordinate[]>();
   for (const fact of manifest.facts) {
-    const keys = factsByPage.get(fact.pageSlug) ?? new Set<string>();
-    keys.add(contentKey(fact.claim, fact.source));
-    factsByPage.set(fact.pageSlug, keys);
+    const targets = factsByPage.get(fact.pageSlug) ?? [];
+    targets.push(fact);
+    factsByPage.set(fact.pageSlug, targets);
   }
 
   for (const path of manifest.modifiedPages) {
@@ -123,8 +161,22 @@ export function buildFileRecovery(repoPath: string, manifest: RecoveryManifest):
       throw new Error(`${path}: invalid current facts fence: ${parsed.warnings.join('; ')}`);
     }
     const pageSlug = path.slice(0, -'.md'.length);
-    const targetKeys = factsByPage.get(pageSlug) ?? new Set<string>();
-    const remaining = parsed.facts.filter(f => !targetKeys.has(contentKey(f.claim, f.source ?? '')));
+    const targets = factsByPage.get(pageSlug) ?? [];
+    const targetKeys = new Set<string>();
+    const removeRowNums = new Set<number>();
+    for (const target of targets) {
+      const key = factContentKey(target);
+      if (targetKeys.has(key)) {
+        throw new Error(`${path}: target commit contains ambiguous duplicate fact metadata`);
+      }
+      targetKeys.add(key);
+      const matches = parsed.facts.filter(f => factContentKey(f) === key);
+      if (matches.length > 1) {
+        throw new Error(`${path}: multiple current fence rows match target fact metadata`);
+      }
+      if (matches.length === 1) removeRowNums.add(matches[0]!.rowNum);
+    }
+    const remaining = parsed.facts.filter(f => !removeRowNums.has(f.rowNum));
     if (remaining.length === parsed.facts.length) continue;
 
     const begin = body.indexOf(FACTS_FENCE_BEGIN);
@@ -151,13 +203,14 @@ export function classifyRecoveryRows(
   const alreadyLegacy: string[] = [];
 
   // Every current fact indexed to a page CREATED by the bad migration must
-  // survive page deletion. Group exact duplicates so one canonical legacy row
-  // remains even when later sync retries indexed the same claim more than once.
+  // survive page deletion. Full fence metadata is part of fact identity: a
+  // later observation with the same claim/source but a different date,
+  // context, visibility, or typed value is independent data.
   const addedSlugs = new Set(manifest.addedPages.map(path => path.slice(0, -'.md'.length)));
   const addedGroups = new Map<string, RecoveryDbRow[]>();
   for (const row of rows) {
     if (!row.source_markdown_slug || !addedSlugs.has(row.source_markdown_slug) || row.row_num === null) continue;
-    const key = `${row.source_markdown_slug}\0${contentKey(row.fact, row.source)}`;
+    const key = `${row.source_markdown_slug}\0${factContentKey(dbFact(row))}`;
     const group = addedGroups.get(key) ?? [];
     group.push(row);
     addedGroups.set(key, group);
@@ -165,16 +218,19 @@ export function classifyRecoveryRows(
   for (const occupants of addedGroups.values()) {
     occupants.sort(compareIds);
     const first = occupants[0]!;
-    const legacies = matchingLegacyRows(rows, first.source_markdown_slug!, first.fact, first.source);
+    const legacies = matchingLegacyRows(rows, first.source_markdown_slug!, dbFact(first));
     if (legacies.length > 1) {
       throw new Error(`${first.source_markdown_slug}: multiple matching legacy rows for ${first.id}`);
     }
-    if (legacies.length === 1) {
-      deleteDuplicateIds.push(...occupants.map(row => row.id));
+    if (occupants.length === 1 && legacies.length === 1) {
+      deleteDuplicateIds.push(first.id);
       alreadyLegacy.push(legacies[0]!.id);
     } else {
-      resetIds.push(first.id);
-      deleteDuplicateIds.push(...occupants.slice(1).map(row => row.id));
+      // Multiple identical occupants are indistinguishable: reset all instead
+      // of guessing that one is a retry duplicate. This can preserve a benign
+      // duplicate, but cannot delete a later legitimate fact.
+      resetIds.push(...occupants.map(row => row.id));
+      if (legacies.length === 1) alreadyLegacy.push(legacies[0]!.id);
     }
   }
 
@@ -185,27 +241,32 @@ export function classifyRecoveryRows(
   const modifiedTargets = new Map<string, RecoveryFactCoordinate>();
   for (const fact of manifest.facts) {
     if (modifiedSlugs.has(fact.pageSlug)) {
-      modifiedTargets.set(`${fact.pageSlug}\0${contentKey(fact.claim, fact.source)}`, fact);
+      const key = `${fact.pageSlug}\0${factContentKey(fact)}`;
+      if (modifiedTargets.has(key)) {
+        throw new Error(`${fact.pageSlug}: target commit contains ambiguous duplicate fact metadata`);
+      }
+      modifiedTargets.set(key, fact);
     }
   }
   for (const fact of modifiedTargets.values()) {
     const occupants = rows.filter(row =>
       row.source_markdown_slug === fact.pageSlug &&
       row.row_num !== null &&
-      row.fact === fact.claim &&
-      row.source === fact.source,
+      factContentKey(dbFact(row)) === factContentKey(fact),
     );
     occupants.sort(compareIds);
-    const legacies = matchingLegacyRows(rows, fact.pageSlug, fact.claim, fact.source);
+    if (occupants.length > 1) {
+      throw new Error(`${fact.pageSlug}: multiple matching fenced rows for ${fact.claim}`);
+    }
+    const legacies = matchingLegacyRows(rows, fact.pageSlug, fact);
     if (legacies.length > 1) {
       throw new Error(`${fact.pageSlug}: multiple matching legacy rows for ${fact.claim}`);
     }
-    if (occupants.length > 0 && legacies.length === 1) {
-      deleteDuplicateIds.push(...occupants.map(row => row.id));
+    if (occupants.length === 1 && legacies.length === 1) {
+      deleteDuplicateIds.push(occupants[0]!.id);
       alreadyLegacy.push(legacies[0]!.id);
-    } else if (occupants.length > 0) {
+    } else if (occupants.length === 1) {
       resetIds.push(occupants[0]!.id);
-      deleteDuplicateIds.push(...occupants.slice(1).map(row => row.id));
     } else if (legacies.length === 1) {
       alreadyLegacy.push(legacies[0]!.id);
     }
@@ -220,11 +281,11 @@ export function classifyRecoveryRows(
 }
 
 function matchingLegacyRows(
-  rows: RecoveryDbRow[], pageSlug: string, claim: string, source: string,
+  rows: RecoveryDbRow[], pageSlug: string, fact: FactIdentity,
 ): RecoveryDbRow[] {
   return rows.filter(row =>
     row.row_num === null && row.entity_slug === pageSlug &&
-    row.fact === claim && row.source === source,
+    factContentKey(dbFact(row)) === factContentKey(fact),
   );
 }
 
@@ -242,18 +303,63 @@ function git(repoPath: string, args: string[]): string {
   });
 }
 
-function factKey(fact: { rowNum: number; claim: string; source?: string }): string {
-  return `${fact.rowNum}\0${fact.claim}\0${fact.source ?? ''}`;
+function factKey(fact: ParsedFact): string {
+  return `${fact.rowNum}\0${factContentKey(fact)}`;
 }
 
-function contentKey(claim: string, source: string): string {
-  return `${claim}\0${source}`;
+type FactIdentity = Omit<RecoveryFactCoordinate, 'pageSlug' | 'rowNum'>;
+
+function factContentKey(fact: FactIdentity | ParsedFact): string {
+  return JSON.stringify([
+    fact.claim,
+    fact.source ?? '',
+    fact.kind,
+    Number(fact.confidence),
+    fact.visibility,
+    fact.notability,
+    fact.validFrom ?? '',
+    fact.validUntil ?? '',
+    fact.context ?? '',
+    fact.active,
+    fact.claimMetric ?? '',
+    fact.claimValue ?? '',
+    fact.claimUnit ?? '',
+    fact.claimPeriod ?? '',
+  ]);
+}
+
+function normalizeDate(value: string | Date | null): string | undefined {
+  if (value === null) return undefined;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.valueOf())) return parsed.toISOString().slice(0, 10);
+  return value.slice(0, 10);
+}
+
+function dbFact(row: RecoveryDbRow): FactIdentity {
+  return {
+    claim: row.fact,
+    source: row.source,
+    kind: row.kind,
+    confidence: Number(row.confidence),
+    visibility: row.visibility,
+    notability: row.notability,
+    validFrom: normalizeDate(row.valid_from),
+    validUntil: normalizeDate(row.valid_until),
+    context: row.context ?? undefined,
+    active: row.expired_at === null,
+    claimMetric: row.claim_metric ?? undefined,
+    claimValue: row.claim_value === null ? undefined : Number(row.claim_value),
+    claimUnit: row.claim_unit ?? undefined,
+    claimPeriod: row.claim_period ?? undefined,
+  };
 }
 
 async function loadRecoveryRows(
   engine: BrainEngine,
   sourceId: string,
   manifest: RecoveryManifest,
+  forUpdate = false,
 ): Promise<RecoveryDbRow[]> {
   const slugs = [...new Set([
     ...manifest.addedPages.map(path => path.slice(0, -'.md'.length)),
@@ -261,14 +367,18 @@ async function loadRecoveryRows(
   ])];
   if (slugs.length === 0) return [];
   return engine.executeRaw<RecoveryDbRow>(
-    `SELECT id::text, entity_slug, fact, source, row_num, source_markdown_slug
+    `SELECT id::text, source_id, entity_slug, fact, source, kind, confidence,
+            visibility, notability, context, valid_from, valid_until, expired_at,
+            claim_metric, claim_value, claim_unit, claim_period,
+            row_num, source_markdown_slug
        FROM facts
       WHERE source_id = $1
         AND (
           (source_markdown_slug = ANY($2::text[]) AND row_num IS NOT NULL)
           OR
           (entity_slug = ANY($2::text[]) AND row_num IS NULL)
-        )`,
+        )
+      ${forUpdate ? 'FOR UPDATE' : ''}`,
     [sourceId, slugs],
   );
 }
@@ -283,15 +393,34 @@ async function recoverDatabase(
   if (!write) return preview;
 
   return engine.transaction(async tx => {
-    const plan = classifyRecoveryRows(manifest, await loadRecoveryRows(tx, sourceId, manifest));
+    const lockedRows = await loadRecoveryRows(tx, sourceId, manifest, true);
+    const plan = classifyRecoveryRows(manifest, lockedRows);
+    const rowById = new Map(lockedRows.map(row => [row.id, row]));
     for (const id of plan.deleteDuplicateIds) {
-      await tx.executeRaw(`DELETE FROM facts WHERE id = $1`, [id]);
+      const row = rowById.get(id)!;
+      const changed = await tx.executeRaw<{ id: string }>(
+        `DELETE FROM facts
+          WHERE id = $1 AND source_id = $2
+            AND row_num IS NOT DISTINCT FROM $3
+            AND source_markdown_slug IS NOT DISTINCT FROM $4
+            AND fact = $5 AND source = $6
+        RETURNING id::text`,
+        [row.id, sourceId, row.row_num, row.source_markdown_slug, row.fact, row.source],
+      );
+      if (changed.length !== 1) throw new Error(`fact ${id} changed after recovery classification`);
     }
     for (const id of plan.resetIds) {
-      await tx.executeRaw(
-        `UPDATE facts SET row_num = NULL, source_markdown_slug = NULL WHERE id = $1`,
-        [id],
+      const row = rowById.get(id)!;
+      const changed = await tx.executeRaw<{ id: string }>(
+        `UPDATE facts SET row_num = NULL, source_markdown_slug = NULL
+          WHERE id = $1 AND source_id = $2
+            AND row_num IS NOT DISTINCT FROM $3
+            AND source_markdown_slug IS NOT DISTINCT FROM $4
+            AND fact = $5 AND source = $6
+        RETURNING id::text`,
+        [row.id, sourceId, row.row_num, row.source_markdown_slug, row.fact, row.source],
       );
+      if (changed.length !== 1) throw new Error(`fact ${id} changed after recovery classification`);
     }
     return plan;
   });
@@ -301,7 +430,7 @@ interface CliArgs {
   repo: string;
   commit: string;
   source: string;
-  write: boolean;
+  mode: 'dry-run' | 'write-db' | 'write-files';
 }
 
 function parseCliArgs(argv: string[]): CliArgs {
@@ -311,19 +440,42 @@ function parseCliArgs(argv: string[]): CliArgs {
     if (!value || value.startsWith('--')) throw new Error(`missing required ${name}`);
     return value;
   };
+  const writeDb = argv.includes('--write-db');
+  const writeFiles = argv.includes('--write-files');
+  if (writeDb && writeFiles) throw new Error('choose only one of --write-db or --write-files');
+  if (argv.includes('--write')) throw new Error('--write was removed; use --write-db, verify, then --write-files');
   return {
     repo: read('--repo'),
     commit: read('--commit'),
     source: read('--source'),
-    write: argv.includes('--write'),
+    mode: writeDb ? 'write-db' : writeFiles ? 'write-files' : 'dry-run',
   };
 }
 
-function assertRecoveryPathsClean(repo: string, files: FileRecovery): void {
-  const paths = [...files.deletePaths, ...files.rewrites.map(item => item.path)];
+function assertRecoveryPathsClean(repo: string, manifest: RecoveryManifest): void {
+  const paths = [...manifest.addedPages, ...manifest.modifiedPages];
   if (paths.length === 0) return;
   const status = git(repo, ['status', '--porcelain=v1', '--', ...paths]);
   if (status.trim()) throw new Error('recovery target paths have uncommitted changes');
+}
+
+function assertFileRecoveryReady(manifest: RecoveryManifest, rows: RecoveryDbRow[]): void {
+  const addedSlugs = new Set(manifest.addedPages.map(path => path.slice(0, -'.md'.length)));
+  const stranded = rows.filter(row =>
+    row.row_num !== null && row.source_markdown_slug !== null && addedSlugs.has(row.source_markdown_slug),
+  );
+  if (stranded.length > 0) {
+    throw new Error(`database recovery is incomplete: ${stranded.length} fenced rows remain on added pages`);
+  }
+  const modifiedSlugs = new Set(manifest.modifiedPages.map(path => path.slice(0, -'.md'.length)));
+  const targets = new Set(manifest.facts
+    .filter(fact => modifiedSlugs.has(fact.pageSlug))
+    .map(fact => `${fact.pageSlug}\0${factContentKey(fact)}`));
+  const matching = rows.filter(row => row.row_num !== null && row.source_markdown_slug !== null &&
+    targets.has(`${row.source_markdown_slug}\0${factContentKey(dbFact(row))}`));
+  if (matching.length > 0) {
+    throw new Error(`database recovery is incomplete: ${matching.length} target rows remain fenced on modified pages`);
+  }
 }
 
 function applyFileRecovery(repo: string, files: FileRecovery): void {
@@ -340,8 +492,6 @@ async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   const repo = realpathSync(args.repo);
   const manifest = buildRecoveryManifest(repo, args.commit);
-  const files = buildFileRecovery(repo, manifest);
-  assertRecoveryPathsClean(repo, files);
 
   const { loadConfig, toEngineConfig } = await import('../src/core/config.ts');
   const { createEngine } = await import('../src/core/engine-factory.ts');
@@ -361,10 +511,24 @@ async function main(): Promise<void> {
       throw new Error(`source ${args.source} local_path does not match --repo`);
     }
 
-    const plan = await recoverDatabase(engine, args.source, manifest, args.write);
-    if (args.write) applyFileRecovery(repo, files);
+    assertRecoveryPathsClean(repo, manifest);
+    const currentRows = await loadRecoveryRows(engine, args.source, manifest);
+    let plan: RecoveryPlan;
+    let files: FileRecovery;
+    if (args.mode === 'write-db') {
+      files = buildFileRecovery(repo, manifest);
+      plan = await recoverDatabase(engine, args.source, manifest, true);
+    } else if (args.mode === 'write-files') {
+      assertFileRecoveryReady(manifest, currentRows);
+      files = buildFileRecovery(repo, manifest);
+      plan = classifyRecoveryRows(manifest, currentRows);
+      applyFileRecovery(repo, files);
+    } else {
+      files = buildFileRecovery(repo, manifest);
+      plan = classifyRecoveryRows(manifest, currentRows);
+    }
     console.log(JSON.stringify({
-      mode: args.write ? 'write' : 'dry-run',
+      mode: args.mode,
       source: args.source,
       commit: manifest.commit,
       added_pages: manifest.addedPages.length,

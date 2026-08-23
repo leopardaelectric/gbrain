@@ -20,16 +20,17 @@ facts and are reported as skipped.
 
 Make page stamping resumable. For each assignment, inspect the target fence
 slot inside one database transaction. If the slot is empty, stamp the legacy
-row. If the slot contains an exact claim/source duplicate created by a partial
+row. If the slot contains an exact full-metadata duplicate created by a partial
 run and sync, delete that derived duplicate and stamp the original legacy row.
-If the occupant differs, fail the page without changing its database rows.
+If the occupant differs, fail the page and restore both the database and file
+to their pre-page state.
 
 Recover production using the exact auto-sync commit that captured the partial
 migration as a scope manifest. Later syncs changed legitimate pages after that
 commit, so a commit-level revert is unsafe. Reset all facts currently attached
 to the 462 pages created by the bad migration, remove those pages, and preserve
 later facts as legacy DB-only rows. On the 17 legitimate pages, remove only
-claim/source rows introduced by the target commit and preserve later rows even
+full-metadata rows introduced by the target commit and preserve later rows even
 when row numbers drifted. The recovery must support dry-run and must refuse
 ambiguous database matches.
 
@@ -56,10 +57,12 @@ ambiguous database matches.
 
 ## Safety And Verification
 
-The recovery script performs no write without `--write`, verifies the target
-commit and source, prints exact counts, and uses a database transaction. The
-git revert remains a separate explicit step after the database recovery is
-verified. Focused tests run red then green, followed by typecheck, the complete
+The recovery script performs no write without one explicit phase flag. It
+verifies the target commit and source, prints exact counts, locks selected rows,
+and uses expected-state predicates in one database transaction. `--write-db`
+recovers only the database. After verification, `--write-files` refuses to run
+unless the database postcondition is complete, then applies retry-safe file
+edits. Focused tests run red then green, followed by typecheck, the complete
 migration test set, repository verification, a production dry-run, the scoped
 recovery, sync, migration rerun, and final database/filesystem consistency
 checks.
