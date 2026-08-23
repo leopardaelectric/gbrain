@@ -30,7 +30,7 @@
  * forever; they live in the legacy keyspace permanently.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -41,6 +41,7 @@ import type { BrainEngine } from '../../core/engine.ts';
 import { loadConfig, toEngineConfig } from '../../core/config.ts';
 import { createEngine } from '../../core/engine-factory.ts';
 import { upsertFactRow, parseFactsFence } from '../../core/facts-fence.ts';
+import type { ParsedFact } from '../../core/facts-fence.ts';
 
 let testEngineOverride: BrainEngine | null = null;
 export function __setTestEngineOverride(engine: BrainEngine | null): void {
@@ -112,8 +113,13 @@ interface LegacyFactRow {
   context: string | null;
   valid_from: Date;
   valid_until: Date | null;
+  expired_at: Date | null;
   source: string;
   confidence: number;
+  claim_metric: string | null;
+  claim_value: number | null;
+  claim_unit: string | null;
+  claim_period: string | null;
 }
 
 interface SourceLookup {
@@ -135,6 +141,71 @@ interface FenceSlotOccupant {
   id: string;
   fact: string;
   source: string;
+  kind: LegacyFactRow['kind'];
+  visibility: LegacyFactRow['visibility'];
+  notability: LegacyFactRow['notability'];
+  context: string | null;
+  valid_from: Date;
+  valid_until: Date | null;
+  expired_at: Date | null;
+  confidence: number;
+  claim_metric: string | null;
+  claim_value: number | null;
+  claim_unit: string | null;
+  claim_period: string | null;
+}
+
+function isoDate(value: Date | string | null): string | undefined {
+  if (value === null) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toISOString().slice(0, 10);
+}
+
+function identityKey(fact: {
+  claim: string;
+  source?: string;
+  kind: string;
+  confidence: number;
+  visibility: string;
+  notability: string;
+  validFrom?: string;
+  validUntil?: string;
+  context?: string;
+  active: boolean;
+  claimMetric?: string;
+  claimValue?: number;
+  claimUnit?: string;
+  claimPeriod?: string;
+}): string {
+  return JSON.stringify([
+    fact.claim, fact.source ?? '', fact.kind, Number(fact.confidence),
+    fact.visibility, fact.notability, fact.validFrom ?? '', fact.validUntil ?? '',
+    fact.context ?? '', fact.active, fact.claimMetric ?? '', fact.claimValue ?? '',
+    fact.claimUnit ?? '', fact.claimPeriod ?? '',
+  ]);
+}
+
+function legacyIdentity(row: LegacyFactRow | FenceSlotOccupant): string {
+  return identityKey({
+    claim: row.fact,
+    source: row.source,
+    kind: row.kind,
+    confidence: row.confidence,
+    visibility: row.visibility,
+    notability: row.notability,
+    validFrom: isoDate(row.valid_from),
+    validUntil: isoDate(row.valid_until),
+    context: row.context ?? undefined,
+    active: row.expired_at === null,
+    claimMetric: row.claim_metric ?? undefined,
+    claimValue: row.claim_value === null ? undefined : Number(row.claim_value),
+    claimUnit: row.claim_unit ?? undefined,
+    claimPeriod: row.claim_period ?? undefined,
+  });
+}
+
+function parsedIdentity(fact: ParsedFact): string {
+  return identityKey(fact);
 }
 
 /**
@@ -208,7 +279,8 @@ async function phaseBFenceFacts(
     // atomic writes.
     const legacy = await engine.executeRaw<LegacyFactRow>(
       `SELECT id, source_id, entity_slug, fact, kind, visibility, notability,
-              context, valid_from, valid_until, source, confidence
+              context, valid_from, valid_until, expired_at, source, confidence,
+              claim_metric, claim_value, claim_unit, claim_period
          FROM facts
         WHERE row_num IS NULL
         ORDER BY source_id, entity_slug, id`,
@@ -273,9 +345,11 @@ async function phaseBFenceFacts(
 
       try {
         // Read existing body or stub-create with minimum frontmatter.
+        const fileExistedBefore = existsSync(filePath);
+        const originalBody = fileExistedBefore ? readFileSync(filePath, 'utf-8') : null;
         let body: string;
-        if (existsSync(filePath)) {
-          body = readFileSync(filePath, 'utf-8');
+        if (fileExistedBefore) {
+          body = originalBody!;
         } else {
           mkdirSync(dirname(filePath), { recursive: true });
           const prefix = entitySlug.split('/')[0];
@@ -292,22 +366,20 @@ async function phaseBFenceFacts(
         // Append each legacy row, collecting the assigned row_nums.
         // Already-fenced rows (row_num already set) are skipped at the
         // DB-row level by the WHERE clause, but if the SAME (entity,
-        // source, claim, source-text) tuple was previously appended in
+        // source and full fence metadata) tuple was previously appended in
         // a partial-completion re-run, parseFactsFence will see the
-        // existing row and append a duplicate. We dedup on (claim,
-        // source) before append to handle this.
+        // existing row and append a duplicate. We dedup on the complete
+        // fence identity before append to handle this.
         const existingFence = parseFactsFence(body);
-        const existingKeySet = new Set(existingFence.facts.map(f => `${f.claim}\0${f.source ?? ''}`));
+        const existingKeySet = new Set(existingFence.facts.map(parsedIdentity));
 
         const assignments: Array<{ id: string; row_num: number }> = [];
         for (const row of group) {
-          const key = `${row.fact}\0${row.source ?? ''}`;
+          const key = legacyIdentity(row);
           if (existingKeySet.has(key)) {
             // Already fenced (idempotent re-run). Find the existing
             // row_num and assign it to this DB row.
-            const existing = existingFence.facts.find(f =>
-              f.claim === row.fact && (f.source ?? '') === (row.source ?? ''),
-            );
+            const existing = existingFence.facts.find(f => parsedIdentity(f) === key);
             if (existing) {
               assignments.push({ id: row.id, row_num: existing.rowNum });
               continue;
@@ -330,6 +402,11 @@ async function phaseBFenceFacts(
             validUntil: validUntilStr,
             source:     row.source,
             context:    row.context ?? undefined,
+            active:     row.expired_at === null,
+            claimMetric: row.claim_metric ?? undefined,
+            claimValue: row.claim_value === null ? undefined : Number(row.claim_value),
+            claimUnit: row.claim_unit ?? undefined,
+            claimPeriod: row.claim_period ?? undefined,
           });
           body = updated;
           existingKeySet.add(key);
@@ -353,33 +430,49 @@ async function phaseBFenceFacts(
         // derived duplicate, but refuse a coordinate occupied by different
         // content. The transaction prevents assignment N from surviving when
         // assignment N+1 fails.
-        await engine.transaction(async (tx) => {
-          for (const a of assignments) {
-            const pending = group.find(row => row.id === a.id)!;
-            const occupants = await tx.executeRaw<FenceSlotOccupant>(
-              `SELECT id, fact, source
-                 FROM facts
-                WHERE source_id = $1
-                  AND source_markdown_slug = $2
-                  AND row_num = $3
-                  AND id <> $4`,
-              [sourceId, entitySlug, a.row_num, a.id],
-            );
-            const occupant = occupants[0];
-            if (occupant) {
-              if (occupant.fact !== pending.fact || occupant.source !== pending.source) {
-                throw new Error(
-                  `fence slot ${entitySlug}#${a.row_num} occupied by non-matching fact ${occupant.id}`,
-                );
+        try {
+          await engine.transaction(async (tx) => {
+            for (const a of assignments) {
+              const pending = group.find(row => row.id === a.id)!;
+              const occupants = await tx.executeRaw<FenceSlotOccupant>(
+                `SELECT id, fact, source, kind, visibility, notability, context,
+                        valid_from, valid_until, expired_at, confidence,
+                        claim_metric, claim_value, claim_unit, claim_period
+                   FROM facts
+                  WHERE source_id = $1
+                    AND source_markdown_slug = $2
+                    AND row_num = $3
+                    AND id <> $4`,
+                [sourceId, entitySlug, a.row_num, a.id],
+              );
+              const occupant = occupants[0];
+              if (occupant) {
+                if (legacyIdentity(occupant) !== legacyIdentity(pending)) {
+                  throw new Error(
+                    `fence slot ${entitySlug}#${a.row_num} occupied by non-matching fact ${occupant.id}`,
+                  );
+                }
+                await tx.executeRaw(`DELETE FROM facts WHERE id = $1`, [occupant.id]);
               }
-              await tx.executeRaw(`DELETE FROM facts WHERE id = $1`, [occupant.id]);
+              await tx.executeRaw(
+                `UPDATE facts SET row_num = $1, source_markdown_slug = $2 WHERE id = $3`,
+                [a.row_num, entitySlug, a.id],
+              );
             }
-            await tx.executeRaw(
-              `UPDATE facts SET row_num = $1, source_markdown_slug = $2 WHERE id = $3`,
-              [a.row_num, entitySlug, a.id],
-            );
+          });
+        } catch (dbError) {
+          // The database transaction is atomic, so restore the filesystem to
+          // the same pre-page state before reporting failure. Otherwise sync
+          // can index the durable fence and recreate the partial-run state.
+          if (fileExistedBefore) {
+            const restorePath = `${filePath}.rollback.tmp`;
+            writeFileSync(restorePath, originalBody!, 'utf-8');
+            renameSync(restorePath, filePath);
+          } else if (existsSync(filePath)) {
+            unlinkSync(filePath);
           }
-        });
+          throw dbError;
+        }
         outcome.fenced += assignments.length;
         outcome.pages_touched += 1;
       } catch (err) {
