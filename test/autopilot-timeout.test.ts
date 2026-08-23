@@ -43,9 +43,11 @@ describe('conversation facts cycle bounds', () => {
     expect(CONVERSATION_BACKFILL_SOURCE).toMatch(
       /runExtractConversationFactsCore\([\s\S]*?limit:\s*BACKGROUND_SLICE_LIMIT/,
     );
-    expect(CONVERSATION_BACKFILL_SOURCE).toContain('AbortSignal.timeout(sourceTimeoutMs)');
+    expect(CONVERSATION_BACKFILL_SOURCE).toContain(
+      'const perSourceWallMs = resolveConversationFactsSourceTimeoutMs',
+    );
     expect(CONVERSATION_BACKFILL_SOURCE).toMatch(
-      /runExtractConversationFactsCore\([\s\S]*?, effectiveSignal\)/,
+      /runExtractConversationFactsCore\([\s\S]*?, controller\.signal\)/,
     );
   });
 });

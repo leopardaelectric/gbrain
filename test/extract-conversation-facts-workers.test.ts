@@ -37,6 +37,7 @@ import {
 const REPO_ROOT = resolve(import.meta.dir, '..');
 const SRC_PATH = resolve(REPO_ROOT, 'src/commands/extract-conversation-facts.ts');
 const SRC = readFileSync(SRC_PATH, 'utf-8');
+// test-reads-source-ok: this structural contract verifies cancellation and cursor wiring in the Minion handler.
 const JOBS_SRC = readFileSync(resolve(REPO_ROOT, 'src/commands/jobs.ts'), 'utf-8');
 
 beforeEach(() => {

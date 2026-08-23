@@ -77,9 +77,18 @@ mock.module('../../src/commands/extract.ts', () => ({
     extractCalls.push({ mode: opts.mode, dir: opts.dir, slugs: opts.slugs });
     return { links_created: 7, timeline_entries_created: 3, pages_processed: opts.slugs?.length ?? 5 };
   },
+  extractMentionsFromDb: async () => ({ created: 0, pages: 0 }),
   walkMarkdownFiles: () => [],
   extractMarkdownLinks: () => [],
   resolveSlug: () => null,
+}));
+
+mock.module('../../src/core/cycle/loop-structural-links.ts', () => ({
+  materializeLoopStructuralLinks: async () => ({
+    links_created: 0,
+    links_considered: 0,
+    pages_scanned: 0,
+  }),
 }));
 
 // Mock embed

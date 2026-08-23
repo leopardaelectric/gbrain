@@ -25,6 +25,8 @@ import { POOL_END_TIMEOUT_SECONDS } from '../src/core/db.ts';
 import {
   backgroundWorkSinkCount,
   __registerDrainerForTest,
+  pgliteCloseTimeoutMs,
+  SINK_DRAIN_TIMEOUT_MS,
 } from '../src/core/background-work.ts';
 import { withEnv } from './helpers/with-env.ts';
 
@@ -52,14 +54,28 @@ describe('computeTeardownDeadlineMs', () => {
     // (2000ms/sink) and PGLite's close is bounded at 5000ms — both budgeted
     // so the backstop cannot fire while every component honors its bound.
     const got = computeTeardownDeadlineMs({ sinkCount: 4, drainTimeoutMs: 2000 });
-    expect(got).toBe(4 * 2000 + 4 * 2000 + 5000 + 2000 + 2 * poolEndBoundMs + 2000);
+    expect(got).toBe(
+      4 * 2000 +
+      4 * SINK_DRAIN_TIMEOUT_MS +
+      pgliteCloseTimeoutMs() +
+      2000 +
+      2 * poolEndBoundMs +
+      2000,
+    );
     expect(got).toBeGreaterThan(10_000); // the codex-found arithmetic bug, pinned
   });
 
   test('small budgets now exceed the floor (the #4143 disconnect-drain + close bounds dominate), floor stays as backstop', () => {
     const poolEndBoundMs = POOL_END_TIMEOUT_SECONDS * 1000 + 500;
     const got = computeTeardownDeadlineMs({ sinkCount: 1, drainTimeoutMs: 100 });
-    expect(got).toBe(1 * 100 + 1 * 2000 + 5000 + 2000 + 2 * poolEndBoundMs + 2000);
+    expect(got).toBe(
+      1 * 100 +
+      SINK_DRAIN_TIMEOUT_MS +
+      pgliteCloseTimeoutMs() +
+      2000 +
+      2 * poolEndBoundMs +
+      2000,
+    );
     expect(got).toBeGreaterThanOrEqual(TEARDOWN_DEADLINE_FLOOR_MS);
   });
 
@@ -71,7 +87,13 @@ describe('computeTeardownDeadlineMs', () => {
 
   test('garbage env values fall back to the formula', async () => {
     const poolEndBoundMs = POOL_END_TIMEOUT_SECONDS * 1000 + 500;
-    const formula = 1 * 100 + 1 * 2000 + 5000 + 2000 + 2 * poolEndBoundMs + 2000;
+    const formula =
+      1 * 100 +
+      SINK_DRAIN_TIMEOUT_MS +
+      pgliteCloseTimeoutMs() +
+      2000 +
+      2 * poolEndBoundMs +
+      2000;
     await withEnv({ GBRAIN_TEARDOWN_DEADLINE_MS: 'banana' }, async () => {
       expect(
         computeTeardownDeadlineMs({ sinkCount: 1, drainTimeoutMs: 100 }),
@@ -81,7 +103,13 @@ describe('computeTeardownDeadlineMs', () => {
 
   test('zero and negative env values fall back to the formula (not "fire immediately")', async () => {
     const poolEndBoundMs = POOL_END_TIMEOUT_SECONDS * 1000 + 500;
-    const formula = 1 * 100 + 1 * 2000 + 5000 + 2000 + 2 * poolEndBoundMs + 2000;
+    const formula =
+      1 * 100 +
+      SINK_DRAIN_TIMEOUT_MS +
+      pgliteCloseTimeoutMs() +
+      2000 +
+      2 * poolEndBoundMs +
+      2000;
     await withEnv({ GBRAIN_TEARDOWN_DEADLINE_MS: '0' }, async () => {
       expect(computeTeardownDeadlineMs({ sinkCount: 1, drainTimeoutMs: 100 })).toBe(formula);
     });
@@ -109,9 +137,9 @@ describe('computeTeardownDeadlineMs', () => {
           drainTimeoutMs: 5000,
         });
         expect(withOne).toBeGreaterThan(TEARDOWN_DEADLINE_FLOOR_MS); // above the floor — delta is visible
-        // Each sink now costs its exit-drain bound (5000 here) PLUS the fixed
-        // 2000ms disconnect-drain pass (#4143 second drain inside disconnect()).
-        expect(withTwo).toBe(withOne + 5000 + 2000);
+        // Each sink costs its exit-drain bound (5000 here) PLUS the current
+        // disconnect-drain pass (#4143 second drain inside disconnect()).
+        expect(withTwo).toBe(withOne + 5000 + SINK_DRAIN_TIMEOUT_MS);
       } finally {
         un2();
       }
