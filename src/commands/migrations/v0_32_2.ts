@@ -125,9 +125,16 @@ interface PhaseBOutcome {
   scanned: number;
   fenced: number;
   skipped_no_entity: number;
+  skipped_unprefixed: number;
   skipped_no_local_path: number;
   pages_touched: number;
   failed_pages: string[];
+}
+
+interface FenceSlotOccupant {
+  id: string;
+  fact: string;
+  source: string;
 }
 
 /**
@@ -166,10 +173,19 @@ async function phaseBFenceFacts(
         `SELECT COUNT(*) AS n FROM facts WHERE row_num IS NULL AND entity_slug IS NULL`,
       );
       const noEntityCount = parseInt(noEntity[0]?.n ?? '0', 10);
+      const unprefixed = await engine.executeRaw<{ n: string }>(
+        `SELECT COUNT(*) AS n FROM facts
+          WHERE row_num IS NULL
+            AND entity_slug IS NOT NULL
+            AND entity_slug NOT LIKE '%/%'`,
+      );
+      const unprefixedCount = parseInt(unprefixed[0]?.n ?? '0', 10);
       return {
         name: 'fence_facts',
         status: 'skipped',
-        detail: `dry-run: would fence ${total - noEntityCount} rows; ${noEntityCount} unfenceable (NULL entity_slug)`,
+        detail: `dry-run: would fence ${total - noEntityCount - unprefixedCount} rows; ` +
+          `${noEntityCount} unfenceable (NULL entity_slug); ` +
+          `${unprefixedCount} unfenceable (unprefixed entity_slug)`,
       };
     } catch (e) {
       return { name: 'fence_facts', status: 'failed', detail: e instanceof Error ? e.message : String(e) };
@@ -202,6 +218,7 @@ async function phaseBFenceFacts(
       scanned: legacy.length,
       fenced: 0,
       skipped_no_entity: 0,
+      skipped_unprefixed: 0,
       skipped_no_local_path: 0,
       pages_touched: 0,
       failed_pages: [],
@@ -213,6 +230,13 @@ async function phaseBFenceFacts(
     for (const row of legacy) {
       if (row.entity_slug === null) {
         outcome.skipped_no_entity += 1;
+        continue;
+      }
+      // Match the current facts writer's stub guard. A bare entity slug has
+      // no stable entity namespace and must stay in the legacy DB-only
+      // keyspace instead of creating a root-level phantom page.
+      if (!row.entity_slug.includes('/')) {
+        outcome.skipped_unprefixed += 1;
         continue;
       }
       const localPath = localPathById.get(row.source_id);
@@ -323,13 +347,39 @@ async function phaseBFenceFacts(
         }
         renameSync(tmpPath, filePath);
 
-        // UPDATE the DB rows with their new row_nums + source_markdown_slug.
-        for (const a of assignments) {
-          await engine.executeRaw(
-            `UPDATE facts SET row_num = $1, source_markdown_slug = $2 WHERE id = $3`,
-            [a.row_num, entitySlug, a.id],
-          );
-        }
+        // Stamp the whole page in one transaction. A prior partial run can
+        // leave the file durable while its legacy DB rows remain unstamped;
+        // sync then indexes those fence rows as new facts. Reclaim an exact
+        // derived duplicate, but refuse a coordinate occupied by different
+        // content. The transaction prevents assignment N from surviving when
+        // assignment N+1 fails.
+        await engine.transaction(async (tx) => {
+          for (const a of assignments) {
+            const pending = group.find(row => row.id === a.id)!;
+            const occupants = await tx.executeRaw<FenceSlotOccupant>(
+              `SELECT id, fact, source
+                 FROM facts
+                WHERE source_id = $1
+                  AND source_markdown_slug = $2
+                  AND row_num = $3
+                  AND id <> $4`,
+              [sourceId, entitySlug, a.row_num, a.id],
+            );
+            const occupant = occupants[0];
+            if (occupant) {
+              if (occupant.fact !== pending.fact || occupant.source !== pending.source) {
+                throw new Error(
+                  `fence slot ${entitySlug}#${a.row_num} occupied by non-matching fact ${occupant.id}`,
+                );
+              }
+              await tx.executeRaw(`DELETE FROM facts WHERE id = $1`, [occupant.id]);
+            }
+            await tx.executeRaw(
+              `UPDATE facts SET row_num = $1, source_markdown_slug = $2 WHERE id = $3`,
+              [a.row_num, entitySlug, a.id],
+            );
+          }
+        });
         outcome.fenced += assignments.length;
         outcome.pages_touched += 1;
       } catch (err) {
@@ -340,6 +390,7 @@ async function phaseBFenceFacts(
 
     const detail = `scanned=${outcome.scanned} fenced=${outcome.fenced} ` +
       `pages=${outcome.pages_touched} skipped_no_entity=${outcome.skipped_no_entity} ` +
+      `skipped_unprefixed=${outcome.skipped_unprefixed} ` +
       `skipped_no_local_path=${outcome.skipped_no_local_path}` +
       (outcome.failed_pages.length > 0 ? ` failed=${outcome.failed_pages.length}` : '');
 

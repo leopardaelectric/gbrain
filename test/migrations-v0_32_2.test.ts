@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process';
 
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { v0_32_2, __setTestEngineOverride, __testing } from '../src/commands/migrations/v0_32_2.ts';
-import { parseFactsFence } from '../src/core/facts-fence.ts';
+import { parseFactsFence, upsertFactRow } from '../src/core/facts-fence.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -223,6 +223,21 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     expect(rows.rows[1]).toMatchObject({ entity_slug: null, row_num: null });
   });
 
+  test('skips bare entity slugs instead of creating root-level pages', async () => {
+    await seedLegacyFact({ entity_slug: 'phantom-root-page', fact: 'Must stay DB-only' });
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('skipped_unprefixed=1');
+    expect(existsSync(join(brainDir, 'phantom-root-page.md'))).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query(
+      `SELECT row_num, source_markdown_slug FROM facts WHERE entity_slug = 'phantom-root-page'`,
+    );
+    expect(rows.rows[0]).toMatchObject({ row_num: null, source_markdown_slug: null });
+  });
+
   test('skips when source has no local_path', async () => {
     // Wipe default source's local_path.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -236,6 +251,86 @@ describe('phaseBFenceFacts — happy path backfill', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rows = await (engine as any).db.query('SELECT row_num FROM facts');
     expect(rows.rows[0].row_num).toBeNull();
+  });
+});
+
+describe('phaseBFenceFacts — partial-run recovery', () => {
+  function pageWithFacts(facts: string[]): string {
+    let body = '---\ntype: person\ntitle: Alice\nslug: people/alice\n---\n\n# Alice\n';
+    for (const fact of facts) {
+      body = upsertFactRow(body, {
+        claim: fact,
+        kind: 'fact',
+        confidence: 1,
+        visibility: 'private',
+        notability: 'medium',
+        validFrom: '2026-08-23',
+        source: 'mcp:put_page',
+      }).body;
+    }
+    return body;
+  }
+
+  test('reclaims an exact fence-slot duplicate created by sync after a partial run', async () => {
+    const legacyId = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+    mkdirSync(join(brainDir, 'people'), { recursive: true });
+    writeFileSync(join(brainDir, 'people/alice.md'), pageWithFacts(['Founded Acme']), 'utf-8');
+
+    // Simulate sync indexing the already-written fence before the migration
+    // managed to stamp the original legacy row.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const duplicate = await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', 'people/alice', 'Founded Acme', 'fact', 'private', 'medium',
+               '2026-08-23', 'mcp:put_page', 1.0, 1, 'people/alice')
+       RETURNING id`,
+    );
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('complete');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query(
+      `SELECT id, row_num, source_markdown_slug FROM facts
+        WHERE entity_slug = 'people/alice' ORDER BY id`,
+    );
+    expect(rows.rows).toEqual([
+      { id: legacyId, row_num: 1, source_markdown_slug: 'people/alice' },
+    ]);
+    expect(rows.rows.some((row: { id: number }) => row.id === duplicate.rows[0].id)).toBe(false);
+  });
+
+  test('rolls back all page stamps when a fence slot has a different occupant', async () => {
+    const firstId = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'First legacy fact' });
+    const secondId = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Second legacy fact' });
+    mkdirSync(join(brainDir, 'people'), { recursive: true });
+    writeFileSync(
+      join(brainDir, 'people/alice.md'),
+      pageWithFacts(['First legacy fact', 'Second legacy fact']),
+      'utf-8',
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', 'people/alice', 'Different occupant', 'fact', 'private', 'medium',
+               '2026-08-23', 'mcp:put_page', 1.0, 2, 'people/alice')`,
+    );
+
+    const r = await __testing.phaseBFenceFacts(engine, OPTS);
+
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('occupied by non-matching fact');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = await (engine as any).db.query(
+      `SELECT id, row_num FROM facts WHERE id IN ($1, $2) ORDER BY id`,
+      [firstId, secondId],
+    );
+    expect(rows.rows).toEqual([
+      { id: firstId, row_num: null },
+      { id: secondId, row_num: null },
+    ]);
   });
 });
 

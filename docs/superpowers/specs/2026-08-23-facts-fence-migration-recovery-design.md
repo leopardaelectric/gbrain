@@ -25,10 +25,13 @@ run and sync, delete that derived duplicate and stamp the original legacy row.
 If the occupant differs, fail the page without changing its database rows.
 
 Recover production using the exact auto-sync commit that captured the partial
-migration. Derive the added fence rows from that commit, reset only their fact
-coordinates, remove exact retry duplicates, revert only that commit's file
-changes, sync the brain, and rerun the corrected migration. The recovery must
-support dry-run and must refuse ambiguous database matches.
+migration as a scope manifest. Later syncs changed legitimate pages after that
+commit, so a commit-level revert is unsafe. Reset all facts currently attached
+to the 462 pages created by the bad migration, remove those pages, and preserve
+later facts as legacy DB-only rows. On the 17 legitimate pages, remove only
+claim/source rows introduced by the target commit and preserve later rows even
+when row numbers drifted. The recovery must support dry-run and must refuse
+ambiguous database matches.
 
 ## Alternatives Rejected
 
@@ -46,7 +49,8 @@ support dry-run and must refuse ambiguous database matches.
 - `test/migrations-v0_32_2.test.ts`: regression coverage for bare slugs,
   partial-run retry duplicates, and non-matching slot occupants.
 - `scripts/recover-v0322-partial-migration.ts`: commit-scoped, dry-run-first
-  production recovery with exact-match checks.
+  production recovery that applies its manifest to the current tree without
+  deleting later facts.
 - `test/recover-v0322-partial-migration.test.ts`: manifest/diff and recovery
   decision tests without production access.
 
