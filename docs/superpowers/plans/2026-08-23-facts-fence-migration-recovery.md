@@ -4,7 +4,7 @@
 
 **Goal:** Prevent invalid facts-fence pages, make partial retries collision-safe, and recover only the Vammo partial migration state.
 
-**Architecture:** The migration filters unsafe targets before filesystem work and stamps each page in one database transaction. A dry-run-first recovery helper derives its exact scope from the known git commit and refuses ambiguous fact matches.
+**Architecture:** The migration filters unsafe targets before filesystem work and stamps each page in one database transaction. A dry-run-first recovery helper derives scope from the known git commit, applies it by content to the current tree, preserves later facts, and refuses ambiguous fact matches.
 
 **Tech Stack:** TypeScript, Bun test, BrainEngine transactions, git diff plumbing, PostgreSQL/PGLite.
 
@@ -41,7 +41,7 @@
 - [ ] Add tests for added pages, modified pages, unchanged fence rows, and ambiguous row matches.
 - [ ] Run `bun test test/recover-v0322-partial-migration.test.ts` and confirm the tests fail before the helper exists.
 - [ ] Implement dry-run output with exact page, fence-row, reset, and duplicate-delete counts.
-- [ ] Implement `--write` in one database transaction, scoped to one source and the derived fact coordinates.
+- [ ] Implement `--write` in one database transaction, scoped to one source and content derived from the target commit. Preserve all later facts attached to pages created by the bad migration.
 - [ ] Run the focused recovery tests and confirm they pass.
 
 ### Task 4: Verify and commit source changes
@@ -62,8 +62,8 @@
 
 - [ ] Run the recovery helper without `--write` for source `mind-agent-brain` and commit `ceb49d1bc`; inspect all counts.
 - [ ] Run the helper with `--write`; verify the database transaction completed.
-- [ ] Revert commit `ceb49d1bc` without touching current unrelated worktree changes.
-- [ ] Commit and push the scoped brain revert.
+- [ ] Remove the 462 pages created by commit `ceb49d1bc` and rewrite only the target facts on its 17 modified pages, without touching current unrelated worktree changes.
+- [ ] Commit and push the scoped brain recovery.
 - [ ] Run a source-scoped sync and verify deleted ghost pages disappear from the database.
 
 ### Task 6: Rerun and verify migration
