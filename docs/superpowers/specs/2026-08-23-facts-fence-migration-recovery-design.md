@@ -1,0 +1,61 @@
+# Facts Fence Migration Recovery Design
+
+## Problem
+
+The v0.32.2 facts-fence migration writes every non-null `entity_slug` to a
+markdown page. Unlike the current facts writer, it does not reject bare slugs.
+On the Vammo brain this created 462 root-level pages and stamped 904 facts into
+those fences. The periodic brain sync then committed those pages.
+
+Five legitimate page groups also stopped after the file rename but before the
+legacy database rows were stamped. A later sync indexed the new fence rows as
+separate facts. A migration retry now attempts to assign the same fence slots
+to the original legacy rows and hits `idx_facts_fence_key`.
+
+## Selected Approach
+
+Use the current writer's safety boundary in the migration: a new fence page
+requires a directory-qualified slug. Bare slugs remain legacy database-only
+facts and are reported as skipped.
+
+Make page stamping resumable. For each assignment, inspect the target fence
+slot inside one database transaction. If the slot is empty, stamp the legacy
+row. If the slot contains an exact claim/source duplicate created by a partial
+run and sync, delete that derived duplicate and stamp the original legacy row.
+If the occupant differs, fail the page without changing its database rows.
+
+Recover production using the exact auto-sync commit that captured the partial
+migration. Derive the added fence rows from that commit, reset only their fact
+coordinates, remove exact retry duplicates, revert only that commit's file
+changes, sync the brain, and rerun the corrected migration. The recovery must
+support dry-run and must refuse ambiguous database matches.
+
+## Alternatives Rejected
+
+- Keep the 462 bare pages. This makes invalid entity resolution durable and
+  contradicts the current writer's guard.
+- Revert files only. This leaves fence-owned fact coordinates pointing at
+  missing or reverted markdown.
+- Delete all facts for affected pages. This can destroy unrelated facts that
+  existed before the migration.
+
+## Components
+
+- `src/commands/migrations/v0_32_2.ts`: slug guard, dry-run reporting, and
+  collision-safe transactional stamping.
+- `test/migrations-v0_32_2.test.ts`: regression coverage for bare slugs,
+  partial-run retry duplicates, and non-matching slot occupants.
+- `scripts/recover-v0322-partial-migration.ts`: commit-scoped, dry-run-first
+  production recovery with exact-match checks.
+- `test/recover-v0322-partial-migration.test.ts`: manifest/diff and recovery
+  decision tests without production access.
+
+## Safety And Verification
+
+The recovery script performs no write without `--write`, verifies the target
+commit and source, prints exact counts, and uses a database transaction. The
+git revert remains a separate explicit step after the database recovery is
+verified. Focused tests run red then green, followed by typecheck, the complete
+migration test set, repository verification, a production dry-run, the scoped
+recovery, sync, migration rerun, and final database/filesystem consistency
+checks.
