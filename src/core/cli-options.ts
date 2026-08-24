@@ -26,7 +26,7 @@ export interface CliOptions {
    * v0.40.4 — `--explain` flag for `gbrain search/query`. Switches the
    * default formatter to a per-stage attribution view that shows
    * base_score + each boost stage's multiplier + rank delta from
-   * the reranker. Has no effect on other commands.
+   * the reranker. `extract` also owns this flag for phase diagnostics.
    */
   explain: boolean;
   /**
