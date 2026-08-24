@@ -329,6 +329,7 @@ export async function runExtractFacts(
       WHERE f.source_id = $1
         AND f.row_num IS NULL
         AND f.entity_slug IS NOT NULL
+        AND f.entity_slug LIKE '%/%'
         AND f.expired_at IS NULL
         AND EXISTS (
           SELECT 1 FROM pages p

@@ -919,6 +919,31 @@ describe('runExtractFacts — empty-fence guard (Codex R2-#7)', () => {
     expect(r.warnings.some(w => w.includes('apply-migrations'))).toBe(true);
   });
 
+  test('bare slugs with a backing page do NOT trigger the guard because Phase B cannot fence them', async () => {
+    // The v0_32_2 migrator and current facts writer both refuse slugs
+    // without a directory prefix. Even with a live page and local_path,
+    // these rows are intentionally DB-only and cannot be migration debt.
+    await putPage('bare-entity', '# Bare entity\n\nIntentionally unprefixed.');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence)
+       VALUES ('default', 'bare-entity', 'db-only claim', 'fact', 'private', 'medium',
+               now(), 'mcp:put_page', 1.0)`,
+    );
+
+    // A separate fenceable page proves the phase continues past the guard.
+    await putPage('people/alice', FACT_FENCE(
+      `| 1 | fenced fact | fact | 1.0 | world | high | 2026-01-01 |  | s |  |`,
+    ));
+
+    const r = await runExtractFacts(engine, { slugs: ['people/alice'] });
+
+    expect(r.guardTriggered).toBe(false);
+    expect(r.legacyRowsPending).toBe(0);
+    expect(r.factsInserted).toBe(1);
+  });
+
   test('#2484: a soft-deleted backing page makes its legacy row unfenceable (does NOT gate)', async () => {
     // Page exists then gets soft-deleted (deleted_at set). The migration
     // can't fence onto a deleted page, so the row must not gate.
