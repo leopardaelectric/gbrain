@@ -26,7 +26,7 @@ export interface CliOptions {
    * v0.40.4 — `--explain` flag for `gbrain search/query`. Switches the
    * default formatter to a per-stage attribution view that shows
    * base_score + each boost stage's multiplier + rank delta from
-   * the reranker. Has no effect on other commands.
+   * the reranker. `extract` also owns this flag for phase diagnostics.
    */
   explain: boolean;
   /**
@@ -102,6 +102,7 @@ export function parseGlobalFlags(argv: string[]): { cliOpts: CliOptions; rest: s
   // a second pass below.
   type Slot =
     | { plain: string }
+    | { explain: true }
     | { timeoutValue: string; equalsForm: boolean };
   const slots: Slot[] = [];
 
@@ -153,6 +154,7 @@ export function parseGlobalFlags(argv: string[]): { cliOpts: CliOptions; rest: s
     // v0.40.4 — --explain for `gbrain search/query` per-stage attribution.
     if (a === '--explain') {
       cliOpts.explain = true;
+      slots.push({ explain: true });
       continue;
     }
     // --brain <id> / --brain=<id> — brain (database) axis. Exact-match only:
@@ -190,12 +192,20 @@ export function parseGlobalFlags(argv: string[]): { cliOpts: CliOptions; rest: s
   const commandSlot = slots.find((s): s is { plain: string } => 'plain' in s);
   const commandOwnsTimeout =
     commandSlot !== undefined && TIMEOUT_OWNING_COMMANDS.has(commandSlot.plain);
+  // `extract --explain <phase>` is parsed by runExtract itself. Preserve the
+  // flag for that command while still exposing it through cliOpts for the
+  // search/query formatters.
+  const commandOwnsExplain = commandSlot?.plain === 'extract';
 
   const rest: string[] = [];
   const handback: string[] = [];
   for (const s of slots) {
     if ('plain' in s) {
       rest.push(s.plain);
+      continue;
+    }
+    if ('explain' in s) {
+      if (commandOwnsExplain) rest.push('--explain');
       continue;
     }
     if (commandOwnsTimeout) {

@@ -89,6 +89,12 @@ describe('parseGlobalFlags', () => {
     expect(r.cliOpts.explain).toBe(true);
     expect(r.rest).toEqual(['search', 'test query']);
   });
+
+  test('hands --explain back to extract for phase diagnostics', () => {
+    const r = parseGlobalFlags(['extract', '--explain', 'facts.fence', '--json']);
+    expect(r.cliOpts.explain).toBe(true);
+    expect(r.rest).toEqual(['extract', '--explain', 'facts.fence', '--json']);
+  });
 });
 
 describe('getCliOptions / setCliOptions singleton', () => {

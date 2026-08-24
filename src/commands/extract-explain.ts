@@ -21,6 +21,14 @@ import { loadActivePackBestEffort } from '../core/schema-pack/best-effort.ts';
 import { getExtractableSpec, extractableSpecsFromPack } from '../core/schema-pack/extractable.ts';
 import { locateMutablePackFile } from '../core/schema-pack/mutate.ts';
 
+export function stringifyExtractExplainJson(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_key, item) => typeof item === 'bigint' ? item.toString() : item,
+    2,
+  );
+}
+
 export async function runExtractExplain(
   engine: BrainEngine,
   args: string[],
@@ -45,12 +53,12 @@ export async function runExtractExplain(
 
   if (!pack) {
     if (json) {
-      console.log(JSON.stringify({
+      console.log(stringifyExtractExplainJson({
         schema_version: 1,
         kind: kindArg,
         status: 'no_active_pack',
         message: 'No active schema pack configured.',
-      }, null, 2));
+      }));
     } else {
       console.log(`Kind: ${kindArg}`);
       console.log('Status: no active pack configured');
@@ -77,14 +85,14 @@ export async function runExtractExplain(
   if (!spec && !cyclePhaseKinds.has(kindArg)) {
     const allExtractable = Array.from(extractableSpecsFromPack(pack.manifest).keys()).sort();
     if (json) {
-      console.log(JSON.stringify({
+      console.log(stringifyExtractExplainJson({
         schema_version: 1,
         kind: kindArg,
         status: 'not_declared',
         active_pack: pack.manifest.name,
         available_extractable_kinds: allExtractable,
         builtin_kinds: Array.from(cyclePhaseKinds).sort(),
-      }, null, 2));
+      }));
     } else {
       console.log(`Kind: ${kindArg}`);
       console.log(`Active pack: ${pack.manifest.name}`);
@@ -156,7 +164,7 @@ export async function runExtractExplain(
   }
 
   if (json) {
-    console.log(JSON.stringify({
+    console.log(stringifyExtractExplainJson({
       schema_version: 1,
       kind: kindArg,
       status: spec ? 'pack_declared' : 'builtin',
@@ -165,7 +173,7 @@ export async function runExtractExplain(
       prompt_template: promptPath ? { path: promptPath, exists: promptExists } : null,
       fixture_corpus: fixturePath ? { path: fixturePath, exists: fixtureExists } : null,
       rollup_7d: rollup,
-    }, null, 2));
+    }));
     return;
   }
 
