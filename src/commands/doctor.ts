@@ -1413,12 +1413,16 @@ export async function buildChecks(
       } else {
         const hitsByPattern: Record<string, number> = {};
         let unmatched = 0;
+        const unmatchedSlugs: string[] = [];
         for (const page of sample) {
           const body = await readConversationBodyForParsing(engine, page);
           const result = parseConversation(body, { page, noPolish: true, noFallback: true });
           const id = result.matched_pattern_id ?? '_no_match';
           hitsByPattern[id] = (hitsByPattern[id] ?? 0) + 1;
-          if (result.phase === 'no_match') unmatched++;
+          if (result.phase === 'no_match') {
+            unmatched++;
+            if (unmatchedSlugs.length < 10) unmatchedSlugs.push(page.slug);
+          }
         }
         const unmatchedPct = (unmatched / sample.length) * 100;
         const breakdown = Object.entries(hitsByPattern)
@@ -1433,6 +1437,12 @@ export async function buildChecks(
               `${unmatched}/${sample.length} conversation pages (${unmatchedPct.toFixed(1)}%) match NO built-in pattern. ` +
               `Breakdown: ${breakdown}. ` +
               `Investigate: gbrain conversation-parser scan <slug>`,
+            details: {
+              sample_size: sample.length,
+              unmatched_count: unmatched,
+              unmatched_slugs: unmatchedSlugs,
+              hits_by_pattern: hitsByPattern,
+            },
           });
         } else {
           checks.push({

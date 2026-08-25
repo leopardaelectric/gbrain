@@ -15,6 +15,27 @@ const SLACK_DM = `# DM (group) with Hugh, Karyshma, Theo — 2026-06-15
 - **Juan** (Mon 11:20)
   Agreed. Let's make sure we capture it for all ongoing customers.`;
 
+const DAILY_SLACK_ARCHIVE = `# Slack Archive: #coor_cos_security (2026-08-25)
+
+## 2026-08-25T12:04:37.435Z
+
+slack_ts: 1787659477.435379
+link: https://example.slack.com/archives/C1/p1
+user: U123
+user_display: Victor Alexandre Rodrigues Cardoso
+thread_ts: 1787610037.073879
+
+Contato feito com a base, moto pode ser retirada sem problemas!
+
+## 2026-08-25T13:13:07.804Z
+
+slack_ts: 1787663587.804959
+user: U123
+user_display: Victor Alexandre Rodrigues Cardoso
+thread_ts: 1787573870.206409
+
+Alguma informação a mais?`;
+
 describe('looksLikeBlockConversation', () => {
   test('detects the block header signature', () => {
     expect(looksLikeBlockConversation(SLACK_DM)).toBe(true);
@@ -77,5 +98,21 @@ describe('parseConversation integration — block format now yields messages', (
     const res = parseConversation('**Theo** (11:18): hi there', { fallbackDate: '2026-06-15' });
     expect(res.messages.length).toBe(1);
     expect(res.messages[0].speaker).toBe('Theo');
+  });
+
+  test('daily Slack archive metadata blocks parse as timestamped messages', () => {
+    const res = parseConversation(DAILY_SLACK_ARCHIVE, {
+      fallbackDate: '2026-08-25',
+    });
+
+    expect(res.phase).toBe('regex_match');
+    expect(res.matched_pattern_id).toBe('imessage-slack');
+    expect(res.messages).toHaveLength(2);
+    expect(res.messages[0]).toMatchObject({
+      speaker: 'Victor Alexandre Rodrigues Cardoso',
+      timestamp: '2026-08-25T12:04:00Z',
+    });
+    expect(res.messages[0].text).toContain('moto pode ser retirada');
+    expect(res.messages[1].text).toBe('Alguma informação a mais?');
   });
 });

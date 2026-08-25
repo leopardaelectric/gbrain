@@ -132,6 +132,28 @@ describe('computeDoctorReport — pure score aggregation', () => {
 });
 
 describe('buildChecks — orchestrator against PGLite', () => {
+  test('conversation coverage exposes bounded unmatched slug diagnostics', async () => {
+    await engine.putPage('conversations/unmatched-a', {
+      type: 'conversation',
+      title: 'Unmatched A',
+      compiled_truth: 'ordinary prose without message anchors',
+    });
+    await engine.putPage('conversations/unmatched-b', {
+      type: 'conversation',
+      title: 'Unmatched B',
+      compiled_truth: 'more ordinary prose without message anchors',
+    });
+
+    const checks = await buildChecks(engine, []);
+    const coverage = checks.find((c) => c.name === 'conversation_format_coverage');
+
+    expect(coverage?.status).toBe('warn');
+    expect([...(coverage?.details?.unmatched_slugs as string[])].sort()).toEqual([
+      'conversations/unmatched-a',
+      'conversations/unmatched-b',
+    ]);
+  });
+
   test('returns a non-empty Check[] against a fresh brain', async () => {
     const checks = await buildChecks(engine, []);
     expect(Array.isArray(checks)).toBe(true);

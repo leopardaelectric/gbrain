@@ -36,6 +36,82 @@
 const BLOCK_HEADER =
   /^\s*-\s+\*\*(.+?)\*\*\s+\((?:[A-Za-z]{2,9}\.?\s+)?(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?\)\s*$/;
 
+// Daily Slack archive pages use one Markdown section per message, followed by
+// collector metadata and then the message body. Require both the ISO heading
+// and Slack-specific metadata before normalizing so ordinary dated documents
+// remain untouched.
+const SLACK_ARCHIVE_HEADER =
+  /^##\s+(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):\d{2}(?:\.\d+)?Z\s*$/;
+
+function looksLikeSlackArchiveConversation(body: string): boolean {
+  return (
+    SLACK_ARCHIVE_HEADER.test(body.split('\n').find((line) => SLACK_ARCHIVE_HEADER.test(line)) ?? '') &&
+    /^slack_ts:\s*\S+/m.test(body) &&
+    /^(?:user_display|user):\s*\S+/m.test(body)
+  );
+}
+
+function normalizeSlackArchiveConversation(body: string): string {
+  if (!looksLikeSlackArchiveConversation(body)) return body;
+
+  const out: string[] = [];
+  let current: {
+    date: string;
+    time: string;
+    speaker?: string;
+    sawMetadata: boolean;
+    inBody: boolean;
+    bodyParts: string[];
+  } | null = null;
+
+  const flush = () => {
+    if (!current) return;
+    const text = current.bodyParts.join(' ').replace(/\s+/g, ' ').trim();
+    if (current.speaker && text) {
+      out.push(`**${current.speaker}** (${current.date} ${current.time}): ${text}`);
+    }
+    current = null;
+  };
+
+  for (const line of body.split(/\r?\n/)) {
+    const header = SLACK_ARCHIVE_HEADER.exec(line);
+    if (header) {
+      flush();
+      current = {
+        date: header[1],
+        time: `${header[2]}:${header[3]}`,
+        sawMetadata: false,
+        inBody: false,
+        bodyParts: [],
+      };
+      continue;
+    }
+    if (!current) continue;
+
+    if (!current.inBody) {
+      const metadata = /^([a-z][a-z0-9_]*):\s*(.*)$/.exec(line);
+      if (metadata) {
+        current.sawMetadata = true;
+        if (metadata[1] === 'user_display' && metadata[2].trim()) {
+          current.speaker = metadata[2].trim();
+        } else if (metadata[1] === 'user' && !current.speaker && metadata[2].trim()) {
+          current.speaker = metadata[2].trim();
+        }
+        continue;
+      }
+      if (!line.trim() && current.sawMetadata) {
+        current.inBody = true;
+      }
+      continue;
+    }
+
+    if (line.trim()) current.bodyParts.push(line.trim());
+  }
+  flush();
+
+  return out.length > 0 ? out.join('\n') : body;
+}
+
 /** True when at least one line is a block-format message header. */
 export function looksLikeBlockConversation(body: string): boolean {
   for (const line of body.split('\n')) {
@@ -57,6 +133,8 @@ function to24h(hour: number, ampm?: string): number {
  * body` lines. Returns `body` unchanged when no block header is present.
  */
 export function normalizeBlockConversation(body: string): string {
+  const archiveNormalized = normalizeSlackArchiveConversation(body);
+  if (archiveNormalized !== body) return archiveNormalized;
   if (!looksLikeBlockConversation(body)) return body;
 
   const lines = body.split('\n');
