@@ -28,7 +28,7 @@ async function clearRollup() {
   await engine.executeRaw('DELETE FROM extract_rollup_7d', []);
   await engine.executeRaw('DELETE FROM facts', []);
   await engine.executeRaw('DELETE FROM pages', []);
-  await engine.executeRaw(`UPDATE sources SET local_path = NULL WHERE id = 'default'`, []);
+  await engine.executeRaw(`UPDATE sources SET local_path = NULL, archived = false WHERE id = 'default'`, []);
 }
 
 describe('computeExtractHealthCheck — empty + happy paths', () => {
@@ -82,6 +82,43 @@ describe('computeExtractHealthCheck — WARN paths', () => {
       guard_triggered: false,
       legacy_rows_pending: 0,
       source_ids: ['default'],
+    });
+  });
+
+  test('archived sources do not keep facts.fence actionability active', async () => {
+    await clearRollup();
+    await engine.executeRaw(
+      `UPDATE sources
+          SET local_path = '/tmp/gbrain-doctor-extract-health', archived = true
+        WHERE id = 'default'`,
+      [],
+    );
+    await engine.putPage('people/archived-pending-example', {
+      title: 'Archived Pending Example',
+      type: 'person',
+      compiled_truth: '# Archived Pending Example',
+      frontmatter: {},
+      timeline: '',
+    });
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, source)
+       VALUES ('default', 'people/archived-pending-example', 'Archived legacy claim', 'test')`,
+      [],
+    );
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, halt_count, round_completed_count)
+       VALUES ('facts.fence', 'default', CURRENT_DATE, 5, 5)`,
+      [],
+    );
+
+    const check = await computeExtractHealthCheck(engine);
+
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('current guard is clear');
+    expect((check.details as any)?.facts_fence_probe).toEqual({
+      guard_triggered: false,
+      legacy_rows_pending: 0,
+      source_ids: [],
     });
   });
 

@@ -865,7 +865,7 @@ export async function computeExtractHealthCheck(
     if (kinds.some(k => k.kind === 'facts.fence')) {
       try {
         const sourceRows = await engine.executeRaw<{ id: string }>(
-          `SELECT id FROM sources ORDER BY id`,
+          `SELECT id FROM sources WHERE archived IS NOT TRUE ORDER BY id`,
           [],
         );
         let legacyRowsPending = 0;
