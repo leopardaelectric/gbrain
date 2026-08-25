@@ -35,6 +35,7 @@ import {
   findMentionedEntities,
   tokenizeForScan,
   tokenizeTitle,
+  gazetteerFingerprint,
   LINKABLE_ENTITY_TYPES,
   type Gazetteer,
   type GazetteerEntry,
@@ -77,6 +78,18 @@ function gazetteerFromEntries(entries: Omit<GazetteerEntry, 'tokens'>[]): Gazett
   for (const bucket of g.values()) bucket.sort((a, b) => b.tokens.length - a.tokens.length);
   return g;
 }
+
+test('gazetteer fingerprint changes when entries change under the same first-token key', () => {
+  const first = gazetteerFromEntries([
+    { slug: 'companies/acme-one', source_id: 'default', title: 'Acme One' },
+  ]);
+  const second = gazetteerFromEntries([
+    { slug: 'companies/acme-two', source_id: 'default', title: 'Acme Two' },
+  ]);
+
+  expect([...first.keys()]).toEqual([...second.keys()]);
+  expect(gazetteerFingerprint(first)).not.toBe(gazetteerFingerprint(second));
+});
 
 // ============================================================
 // findMentionedEntities — pure unit tests
@@ -781,6 +794,21 @@ describe('buildGazetteer — engine integration', () => {
     expect((g.get('sable') ?? []).filter((e) => e.tokens.length === 1)).toHaveLength(0);
   });
 
+  test('alias entries: punctuation-equivalent aliases for different slugs are ambiguous', async () => {
+    await engine.putPage('companies/acme-one', {
+      type: 'company', title: 'Acme One Holdings', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.putPage('companies/acme-two', {
+      type: 'company', title: 'Acme Two Holdings', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.setPageAliases('companies/acme-one', 'default', ['acme-inc']);
+    await engine.setPageAliases('companies/acme-two', 'default', ['acme inc']);
+
+    const g = await buildGazetteer(engine);
+
+    expect((g.get('acme') ?? []).filter((e) => e.tokens.join(' ') === 'acme inc')).toHaveLength(0);
+  });
+
   test('alias entries: alias colliding with an existing page TITLE in the same source is skipped', async () => {
     await engine.putPage('companies/acme-corp', {
       type: 'company', title: 'Acme', compiled_truth: 'b', timeline: '', frontmatter: {},
@@ -793,6 +821,21 @@ describe('buildGazetteer — engine integration', () => {
     const bucket = g.get('acme') ?? [];
     expect(bucket.some((e) => e.slug === 'companies/acme-corp')).toBe(true);
     expect(bucket.some((e) => e.slug === 'people/andy-c')).toBe(false);
+  });
+
+  test('alias entries: punctuation-equivalent alias colliding with a title is skipped', async () => {
+    await engine.putPage('companies/acme-inc', {
+      type: 'company', title: 'Acme Inc', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.putPage('companies/acme-alias-owner', {
+      type: 'company', title: 'Acme Alias Owner', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.setPageAliases('companies/acme-alias-owner', 'default', ['acme-inc']);
+
+    const g = await buildGazetteer(engine);
+    const candidates = (g.get('acme') ?? []).filter((e) => e.tokens.join(' ') === 'acme inc');
+
+    expect(candidates.map((e) => e.slug)).toEqual(['companies/acme-inc']);
   });
 
   test('alias entries: sub-MIN_NAME_LENGTH aliases are skipped', async () => {

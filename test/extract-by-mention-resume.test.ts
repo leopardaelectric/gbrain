@@ -18,7 +18,7 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runExtract } from '../src/commands/extract.ts';
 import { setCliOptions } from '../src/core/cli-options.ts';
 import { loadOpCheckpoint, mentionsFingerprint } from '../src/core/op-checkpoint.ts';
-import { createHash } from 'crypto';
+import { buildGazetteer, gazetteerFingerprint } from '../src/core/by-mention.ts';
 
 let engine: PGLiteEngine;
 
@@ -82,11 +82,8 @@ async function runByMention(args: string[]): Promise<void> {
 
 /** Compute the canonical gazetteer hash the way the production code does. */
 async function expectedGazetteerHash(): Promise<string> {
-  // The gazetteer is built from entity pages by buildGazetteer; for tests
-  // we just build it the same way the prod code does and hash sorted keys.
-  const { buildGazetteer } = await import('../src/core/by-mention.ts');
   const gz = await buildGazetteer(engine);
-  return createHash('sha256').update([...gz.keys()].sort().join('|')).digest('hex').slice(0, 8);
+  return gazetteerFingerprint(gz);
 }
 
 describe('by-mention checkpoint/resume (T5)', () => {
@@ -155,9 +152,11 @@ describe('by-mention checkpoint/resume (T5)', () => {
     // fingerprint → fresh checkpoint state (codex fix #3 regression guard).
     await engine.putPage('people/charlie', { type: 'person', title: 'Charlie Example', compiled_truth: 'body', timeline: '', frontmatter: {} });
 
-    const oldHash = createHash('sha256').update(
-      ['acme corp', 'alice example'].sort().join('|'),
-    ).digest('hex').slice(0, 8);
+    const oldGazetteer = await buildGazetteer(engine);
+    const charlieBucket = oldGazetteer.get('charlie') ?? [];
+    oldGazetteer.set('charlie', charlieBucket.filter((entry) => entry.slug !== 'people/charlie'));
+    if (oldGazetteer.get('charlie')?.length === 0) oldGazetteer.delete('charlie');
+    const oldHash = gazetteerFingerprint(oldGazetteer);
     const newHash = await expectedGazetteerHash();
     expect(newHash).not.toBe(oldHash);
 

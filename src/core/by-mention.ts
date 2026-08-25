@@ -27,6 +27,7 @@
  */
 
 import type { BrainEngine } from './engine.ts';
+import { createHash } from 'crypto';
 import { isUndefinedTableError } from './utils.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import { stripCodeBlocks } from './link-extraction.ts';
@@ -80,6 +81,18 @@ export interface GazetteerEntry {
  * munch).
  */
 export type Gazetteer = Map<string, GazetteerEntry[]>;
+
+/** Stable semantic fingerprint for mention-scan checkpoints. */
+export function gazetteerFingerprint(gazetteer: Gazetteer): string {
+  const entries = Array.from(gazetteer.values())
+    .flat()
+    .map((entry) => [entry.source_id, entry.slug, ...entry.tokens].join('\u0000'))
+    .sort();
+  return createHash('sha256')
+    .update(entries.join('\u0001'))
+    .digest('hex')
+    .slice(0, 8);
+}
 
 export interface Mention {
   /** Target page slug (the entity being mentioned). */
@@ -483,15 +496,23 @@ export async function buildGazetteer(
       [],
     );
     const ignoreLc = new Set(Array.from(ignoreSet, (s) => s.toLowerCase()));
-    // Per-source title index for alias-vs-title collision checks.
-    const titleBySource = new Set<string>();
-    for (const r of rows) {
-      if (r.title) titleBySource.add(`${r.source_id ?? 'default'} ${r.title.toLowerCase()}`);
-    }
-    // Ambiguity: same (source, alias) → multiple slugs.
+    // Ambiguity uses the same normalized token sequence as matching. Raw
+    // aliases such as "Acme-Inc" and "Acme Inc" are therefore equivalent.
+    const aliasTokensByEntry = new Map<string, string[]>();
     const bySourceAlias = new Map<string, Set<string>>();
     for (const a of aliasRows) {
-      const k = `${a.source_id ?? 'default'} ${a.alias_norm}`;
+      const alias = a.alias_norm?.trim();
+      if (!alias || !a.title) continue;
+      const src = a.source_id ?? 'default';
+      if (alias.length < MIN_NAME_LENGTH && !hasCJK(alias)) continue;
+      if (hasCJK(alias) && cjkCharCount(alias) < MIN_CJK_NAME_LENGTH) continue;
+      if (ignoreLc.has(alias.toLowerCase())) continue;
+      const tokens = tokenizeTitle(alias);
+      if (tokens.length === 0) continue;
+      if (tokens.length === 1 && slackUserKeys.has(`${src}\u0000${a.slug}`)) continue;
+      if (tokens[0]!.length < MIN_NAME_LENGTH && tokens.length === 1) continue;
+      aliasTokensByEntry.set(`${src}\u0000${alias}\u0000${a.slug}`, tokens);
+      const k = `${src}\u0000${tokens.join('\u0000')}`;
       const set = bySourceAlias.get(k) ?? new Set<string>();
       set.add(a.slug);
       bySourceAlias.set(k, set);
@@ -501,20 +522,15 @@ export async function buildGazetteer(
       const alias = a.alias_norm?.trim();
       if (!alias || !a.title) continue;
       const src = a.source_id ?? 'default';
-      if (alias.length < MIN_NAME_LENGTH && !hasCJK(alias)) continue;
-      if (hasCJK(alias) && cjkCharCount(alias) < MIN_CJK_NAME_LENGTH) continue;
-      if (ignoreLc.has(alias.toLowerCase())) continue;
-      if ((bySourceAlias.get(`${src} ${alias}`)?.size ?? 0) > 1) continue;
-      if (titleBySource.has(`${src} ${alias.toLowerCase()}`)) continue;
+      const tokens = aliasTokensByEntry.get(`${src}\u0000${alias}\u0000${a.slug}`);
+      if (!tokens) continue;
+      const tokenKey = `${src}\u0000${tokens.join('\u0000')}`;
+      if ((bySourceAlias.get(tokenKey)?.size ?? 0) > 1) continue;
+      // A page title is authoritative when an alias tokenizes identically.
+      if (titleTargetsBySource.has(tokenKey)) continue;
       const dedupeKey = `${src} ${alias} ${a.slug}`;
       if (seenAliasEntry.has(dedupeKey)) continue;
       seenAliasEntry.add(dedupeKey);
-      const tokens = tokenizeTitle(alias);
-      if (tokens.length === 0) continue;
-      // Keep Slack aliases in page_aliases for exact resolution, but do not
-      // turn nickname-shaped single tokens into broad body-text mentions.
-      if (tokens.length === 1 && slackUserKeys.has(`${src}\u0000${a.slug}`)) continue;
-      if (tokens[0]!.length < MIN_NAME_LENGTH && tokens.length === 1) continue;
       const entry: GazetteerEntry = { slug: a.slug, source_id: src, title: a.title, tokens };
       const key = tokens[0]!;
       const bucket = gazetteer.get(key);
