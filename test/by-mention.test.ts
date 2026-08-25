@@ -648,6 +648,40 @@ describe('buildGazetteer — engine integration', () => {
     expect(g.get('apple')![0]!.slug).toBe('companies/apple');
   });
 
+  test('ambiguous title in one source is excluded instead of choosing a nondeterministic target', async () => {
+    await engine.putPage('companies/vammo', {
+      type: 'company', title: 'Vammo', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.putPage('default/companies/vammo', {
+      type: 'company', title: 'Vammo', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+
+    const g = await buildGazetteer(engine);
+
+    expect(g.has('vammo')).toBe(false);
+  });
+
+  test('the same title in different sources resolves to the page-local source', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('other', 'Other') ON CONFLICT (id) DO NOTHING`,
+    );
+    await engine.putPage('companies/acme-default', {
+      type: 'company', title: 'Acme', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.putPage('companies/acme-other', {
+      type: 'company', title: 'Acme', compiled_truth: 'b', timeline: '', frontmatter: {},
+    }, { sourceId: 'other' });
+
+    const g = await buildGazetteer(engine);
+    const mentions = findMentionedEntities('Acme launched.', g, {
+      fromSlug: 'notes/other', fromSourceId: 'other',
+    });
+
+    expect(mentions.map((mention) => `${mention.source_id}:${mention.slug}`)).toEqual([
+      'other:companies/acme-other',
+    ]);
+  });
+
   test('alias entries (v0.46.15, #3801): page_aliases become gazetteer entries', async () => {
     await engine.putPage('people/saoirse-x', {
       type: 'person', title: 'Saoirse Example', compiled_truth: 'b', timeline: '', frontmatter: {},

@@ -412,37 +412,42 @@ export async function buildGazetteer(
   }
   const ignoreSet = new Set<string>([...DEFAULT_IGNORE_LIST, ...(opts.extraIgnore ?? [])]);
 
-  const gazetteer: Gazetteer = new Map();
+  // A prose mention cannot choose safely between two live pages with the
+  // same normalized title in one source. Build the eligible title set once,
+  // then drop every ambiguous key instead of relying on database row order.
+  const titleTokensByPage = new Map<string, string[]>();
+  const titleTargetsBySource = new Map<string, Set<string>>();
   for (const row of rows) {
     if (!row.title) continue;
-    // Slack bot titles are integration labels, not prose-linkable people.
     if (row.is_slack_user && row.is_bot) continue;
     if (!hasCJK(row.title) && row.title.length < MIN_NAME_LENGTH) continue;
     if (hasCJK(row.title) && cjkCharCount(row.title) < MIN_CJK_NAME_LENGTH) continue;
-    // NOTE (v0.46.15, deliberately preserved): for TITLES this condition is
-    // intentionally vacuous — every row here IS a real page, so an
-    // ignore-listed name the user explicitly created a page for is always
-    // allowed (documented CK12 policy). The ignore list bites only via
-    // opts.extraIgnore names that have no page, and — with real teeth — on
-    // the ALIAS entries below, which are not user-created pages.
     if (ignoreSet.has(row.title) && !existingTitles.has(row.title)) continue;
-
     const tokens = tokenizeTitle(row.title);
     if (tokens.length === 0) continue;
     if (tokens[0]!.length < MIN_NAME_LENGTH && tokens.length === 1) continue;
-    // #4222: a single-generic-token PERSON title ("Will", "Chief") is a
-    // junk-hub magnet — every prose occurrence of the word would accrete
-    // another mention edge onto a near-empty page. Dropped from the
-    // gazetteer even though the page exists (unlike the CK12 ignore-list
-    // rule above, which trusts user-created pages: these titles are
-    // overwhelmingly extractor-minted, and the page itself stays intact —
-    // only the auto-link accretion stops). Multi-token titles ("Will
-    // Smith") and non-person types are unaffected.
     if (tokens.length === 1 && row.type === 'person' && isGenericEntityToken(tokens[0]!)) continue;
+
+    const sourceId = row.source_id ?? 'default';
+    const pageKey = `${sourceId}\u0000${row.slug}`;
+    const titleKey = `${sourceId}\u0000${tokens.join('\u0000')}`;
+    titleTokensByPage.set(pageKey, tokens);
+    const targets = titleTargetsBySource.get(titleKey) ?? new Set<string>();
+    targets.add(row.slug);
+    titleTargetsBySource.set(titleKey, targets);
+  }
+
+  const gazetteer: Gazetteer = new Map();
+  for (const row of rows) {
+    const sourceId = row.source_id ?? 'default';
+    const tokens = titleTokensByPage.get(`${sourceId}\u0000${row.slug}`);
+    if (!row.title || !tokens) continue;
+    const titleKey = `${sourceId}\u0000${tokens.join('\u0000')}`;
+    if ((titleTargetsBySource.get(titleKey)?.size ?? 0) > 1) continue;
 
     const entry: GazetteerEntry = {
       slug: row.slug,
-      source_id: row.source_id ?? 'default',
+      source_id: sourceId,
       title: row.title,
       tokens,
     };
@@ -586,6 +591,10 @@ export function findMentionedEntities(
     let matched: GazetteerEntry | null = null;
     let matchedTokens = 0;
     for (const entry of bucket) {
+      // Same title text can exist in multiple sources. Select only from the
+      // page-local source before maximal-munch chooses a target; filtering
+      // after the first match would let row order shadow the valid entry.
+      if (entry.source_id !== opts.fromSourceId) continue;
       if (entry.tokens.length === 1) {
         matched = entry;
         matchedTokens = 1;
