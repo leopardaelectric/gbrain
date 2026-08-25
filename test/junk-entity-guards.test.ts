@@ -187,8 +187,14 @@ describe('junk_entity_hubs doctor check (#4222)', () => {
     expect(check.name).toBe('junk_entity_hubs');
     expect(check.status).toBe('warn');
     expect(check.message).toContain('people/will');
-    const hubs = (check.details as { hubs: Array<{ slug: string; edges: number }> }).hubs;
+    const hubs = (check.details as {
+      hubs: Array<{ slug: string; edges: number; mention_edges: number; curated_edges: number }>;
+    }).hubs;
     expect(hubs.some(h => h.slug === 'people/will' && h.edges >= 4)).toBe(true);
+    expect(hubs.find(h => h.slug === 'people/will')).toMatchObject({
+      mention_edges: 4,
+      curated_edges: 0,
+    });
     // The note pages have few edges — not listed.
     expect(hubs.some(h => h.slug.startsWith('notes/'))).toBe(false);
   });

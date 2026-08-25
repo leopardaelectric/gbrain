@@ -203,6 +203,7 @@ describe('shouldExclude — orphan filter regression (preserve curation)', () =>
 
   test('inbox intake-tray pages are excluded (same rationale as daily)', () => {
     expect(shouldExclude('inbox/some-renewal-notice-2026-06-22')).toBe(true);
+    expect(shouldExclude('default/inbox/some-renewal-notice-2026-06-22')).toBe(true);
   });
 
   test('root schema and log pages are excluded', () => {

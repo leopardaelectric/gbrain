@@ -110,7 +110,11 @@ export function shouldExcludeFromOrphanReporting(
     if (slug.startsWith(prefix)) return true;
   }
 
-  const firstSegment = slug.split('/')[0];
+  const segments = slug.split('/');
+  // Federated brains expose the primary source under the conventional
+  // `default/` namespace. Apply the same convention policy to the source-local
+  // slug so `default/inbox/...` does not inflate the actionable orphan count.
+  const firstSegment = segments[0] === 'default' ? segments[1] : segments[0];
   if (FIRST_SEGMENT_EXCLUSIONS.has(firstSegment)) return true;
 
   if (ROOT_DATE_SLUG.test(slug)) return true;

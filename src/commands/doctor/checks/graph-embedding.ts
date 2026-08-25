@@ -676,13 +676,20 @@ export async function checkJunkEntityHubs(
       slug: string;
       source_id: string | null;
       edges: number;
+      mention_edges: number;
+      curated_edges: number;
       chunks: number;
     }>(
       `WITH edge_counts AS (
-         SELECT page_id, COUNT(*)::int AS edges FROM (
-           SELECT from_page_id AS page_id FROM links
+         SELECT
+           page_id,
+           COUNT(*)::int AS edges,
+           COUNT(*) FILTER (WHERE link_source = 'mentions')::int AS mention_edges,
+           COUNT(*) FILTER (WHERE link_source IS DISTINCT FROM 'mentions')::int AS curated_edges
+         FROM (
+           SELECT from_page_id AS page_id, link_source FROM links
            UNION ALL
-           SELECT to_page_id AS page_id FROM links
+           SELECT to_page_id AS page_id, link_source FROM links
          ) e
          GROUP BY page_id
          HAVING COUNT(*) > $1
@@ -692,7 +699,8 @@ export async function checkJunkEntityHubs(
          FROM content_chunks
          GROUP BY page_id
        )
-       SELECT p.slug, p.source_id, ec.edges, COALESCE(cc.chunks, 0)::int AS chunks
+       SELECT p.slug, p.source_id, ec.edges, ec.mention_edges, ec.curated_edges,
+              COALESCE(cc.chunks, 0)::int AS chunks
        FROM edge_counts ec
        JOIN pages p ON p.id = ec.page_id AND p.deleted_at IS NULL
        LEFT JOIN chunk_counts cc ON cc.page_id = ec.page_id
@@ -711,7 +719,10 @@ export async function checkJunkEntityHubs(
     }
 
     const list = rows
-      .map(r => `  ${r.slug}${(r.source_id ?? 'default') !== 'default' ? ` [${r.source_id}]` : ''} — ${r.edges} edges, ${r.chunks} chunk(s)`)
+      .map(r =>
+        `  ${r.slug}${(r.source_id ?? 'default') !== 'default' ? ` [${r.source_id}]` : ''} — ` +
+        `${r.edges} edges (${r.mention_edges} mention-derived, ${r.curated_edges} curated), ${r.chunks} chunk(s)`,
+      )
       .join('\n');
     return {
       name: 'junk_entity_hubs',
@@ -727,6 +738,8 @@ export async function checkJunkEntityHubs(
           slug: r.slug,
           source_id: r.source_id ?? 'default',
           edges: r.edges,
+          mention_edges: r.mention_edges,
+          curated_edges: r.curated_edges,
           chunks: r.chunks,
         })),
       },
