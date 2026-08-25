@@ -81,7 +81,15 @@ export function inferNerLinkType(
 ): string | null {
   if (!targetType) return null;
   try {
-    return inferLinkTypeFromPack(pack, targetType, context);
+    // `target_type` is an NER constraint: a company-scoped employment rule
+    // must not turn a nearby person mention into a works_at edge. Keep rules
+    // without a target constraint backward-compatible.
+    const targetScopedPack = {
+      link_types: pack.link_types.filter(
+        linkType => !linkType.inference?.target_type || linkType.inference.target_type === targetType,
+      ),
+    };
+    return inferLinkTypeFromPack(targetScopedPack, targetType, context);
   } catch {
     return null;
   }
