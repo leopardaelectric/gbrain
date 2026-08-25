@@ -282,6 +282,12 @@ export interface DoctorReport {
    */
   health_score: number;
   /**
+   * Weighted knowledge-composition score from the `brain_score` check.
+   * This is intentionally separate from `health_score`, the legacy
+   * all-check penalty aggregate. Null when the focused check did not run.
+   */
+  knowledge_quality_score: number | null;
+  /**
    * v0.41.19.0 — same penalty math (100 − 20×fails − 5×warns) restricted to
    * checks tagged `category: 'brain'` by `categorizeCheck()`. The "is my
    * brain's data healthy?" signal, decoupled from skill routing / ops /
@@ -348,12 +354,18 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
   const skill = tagged.filter((c) => c.category === 'skill');
   const ops = tagged.filter((c) => c.category === 'ops');
   const meta = tagged.filter((c) => c.category === 'meta');
+  const rawKnowledgeScore = tagged.find((c) => c.name === 'brain_score')?.details?.score;
+  const knowledge_quality_score =
+    typeof rawKnowledgeScore === 'number' && Number.isFinite(rawKnowledgeScore)
+      ? rawKnowledgeScore
+      : null;
 
   const status: DoctorReport['status'] = hasFail ? 'unhealthy' : hasWarn ? 'warnings' : 'healthy';
   return {
     schema_version: 2,
     status,
     health_score,
+    knowledge_quality_score,
     brain_checks_score: _penaltyScore(brain),
     category_scores: {
       brain: _penaltyScore(brain),
@@ -2589,9 +2601,22 @@ export async function buildChecks(
         name: 'brain_score',
         status: health.brain_score >= 70 ? 'ok' : 'warn',
         message: `Brain score ${health.brain_score}/100 (${parts.join(', ')})`,
+        details: {
+          score: health.brain_score,
+          embed_coverage_score: health.embed_coverage_score,
+          link_density_score: health.link_density_score,
+          timeline_coverage_score: health.timeline_coverage_score,
+          no_orphans_score: health.no_orphans_score,
+          no_dead_links_score: health.no_dead_links_score,
+        },
       });
     } else {
-      checks.push({ name: 'brain_score', status: 'ok', message: `Brain score 100/100` });
+      checks.push({
+        name: 'brain_score',
+        status: 'ok',
+        message: `Brain score 100/100`,
+        details: { score: 100 },
+      });
     }
   } catch {
     checks.push({ name: 'graph_coverage', status: 'warn', message: 'Could not check graph coverage' });
@@ -4231,11 +4256,11 @@ function outputResults(checks: Check[], json: boolean): boolean {
   console.log('');
 
   if (hasFail) {
-    console.log(`Overall health score: ${score}/100. Failed checks found.`);
+    console.log(`Legacy all-check penalty score: ${score}/100. Failed checks found.`);
   } else if (hasWarn) {
-    console.log(`Overall health score: ${score}/100. All checks OK (some warnings).`);
+    console.log(`Legacy all-check penalty score: ${score}/100. All checks OK (some warnings).`);
   } else {
-    console.log(`Overall health score: ${score}/100. All checks passed.`);
+    console.log(`Legacy all-check penalty score: ${score}/100. All checks passed.`);
   }
   return hasFail;
 }

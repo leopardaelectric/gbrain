@@ -200,6 +200,7 @@ export async function doctorReportRemote(
       name: 'brain_score',
       status: score >= 70 ? 'ok' : score >= 50 ? 'warn' : 'fail',
       message: `Brain score ${score}/100`,
+      details: { score },
     });
   } catch (e) {
     checks.push({

@@ -114,6 +114,21 @@ describe('computeDoctorReport — pure score aggregation', () => {
     expect(r.health_score).toBe(0);
     expect(r.status).toBe('unhealthy');
   });
+
+  test('reports weighted knowledge quality separately from legacy penalty math', () => {
+    const r = computeDoctorReport([
+      {
+        name: 'brain_score',
+        status: 'ok',
+        message: 'Brain score 86/100',
+        details: { score: 86 },
+      },
+      { name: 'resolver_health', status: 'warn', message: 'routing warning' },
+    ]);
+
+    expect(r.knowledge_quality_score).toBe(86);
+    expect(r.health_score).toBe(95);
+  });
 });
 
 describe('buildChecks — orchestrator against PGLite', () => {

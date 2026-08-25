@@ -81,6 +81,7 @@ describe('doctorReportRemote', () => {
     const report = await doctorReportRemote(engine);
     expect(report.status).toMatch(/healthy|warnings/);
     expect(report.health_score).toBeGreaterThanOrEqual(70);
+    expect(report.knowledge_quality_score).not.toBeNull();
   });
 });
 
