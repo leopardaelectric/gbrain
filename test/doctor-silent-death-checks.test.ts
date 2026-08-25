@@ -55,11 +55,11 @@ async function addSource(id: string, localPath: string | null): Promise<void> {
 
 async function addPage(
   slug: string,
-  opts: { sourceId?: string; hash?: string | null; pageKind?: string; type?: string; deleted?: boolean; sourcePath?: string | null } = {},
+  opts: { sourceId?: string; hash?: string | null; pageKind?: string; type?: string; deleted?: boolean; sourcePath?: string | null; frontmatter?: Record<string, unknown> } = {},
 ): Promise<void> {
   await engine.executeRaw(
     `INSERT INTO pages (slug, source_id, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, deleted_at, source_path)
-     VALUES ($1, $2, $7, $3, $1, 'body', '', '{}'::jsonb, $4, $5, $6)`,
+     VALUES ($1, $2, $7, $3, $1, 'body', '', $8::text::jsonb, $4, $5, $6)`,
     [
       slug,
       opts.sourceId ?? 'default',
@@ -68,11 +68,121 @@ async function addPage(
       opts.deleted ? new Date().toISOString() : null,
       opts.sourcePath ?? null,
       opts.type ?? 'concept',
+      JSON.stringify(opts.frontmatter ?? {}),
     ],
   );
 }
 
 describe('content_hash_duplicates (#2250)', () => {
+  test('exact reciprocal canonical/snapshot metadata exempts an intentional mirror pair', async () => {
+    await addPage('sources/example/current', {
+      hash: 'same',
+      frontmatter: {
+        canonical_of: 'default/sources/example/snapshots/2026-08-25',
+      },
+    });
+    await addPage('sources/example/snapshots/2026-08-25', {
+      hash: 'same',
+      frontmatter: {
+        snapshot_of: 'default/sources/example/current',
+      },
+    });
+
+    const c = await checkContentHashDuplicates(engine);
+
+    expect(c.status).toBe('ok');
+    expect(c.message).toContain('1 declared canonical/snapshot mirror pair');
+    expect((c.details as any).exempted_mirror_pair_count).toBe(1);
+    expect((c.details as any).hash_groups).toBe(1);
+    expect((c.details as any).undeclared_hash_groups).toBe(0);
+  });
+
+  test('one-sided mirror metadata does not hide an undeclared duplicate', async () => {
+    await addPage('sources/example/current', {
+      hash: 'same',
+      frontmatter: {
+        canonical_of: 'default/sources/example/snapshots/2026-08-25',
+      },
+    });
+    await addPage('sources/example/snapshots/2026-08-25', { hash: 'same' });
+
+    const c = await checkContentHashDuplicates(engine);
+
+    expect(c.status).toBe('warn');
+    expect(c.message).toContain('sources/example/current == sources/example/snapshots/2026-08-25');
+    expect((c.details as any).exempted_mirror_pair_count).toBe(0);
+  });
+
+  test('mismatched reciprocal mirror pointers do not grant an exemption', async () => {
+    await addPage('sources/example/current', {
+      hash: 'same',
+      frontmatter: {
+        canonical_of: 'default/sources/example/snapshots/2026-08-24',
+      },
+    });
+    await addPage('sources/example/snapshots/2026-08-25', {
+      hash: 'same',
+      frontmatter: {
+        snapshot_of: 'default/sources/example/current',
+      },
+    });
+
+    const c = await checkContentHashDuplicates(engine);
+
+    expect(c.status).toBe('warn');
+    expect((c.details as any).exempted_mirror_pair_count).toBe(0);
+  });
+
+  test('declared mirror pair does not hide another undeclared copy in the same hash group', async () => {
+    await addPage('sources/example/current', {
+      hash: 'same',
+      frontmatter: {
+        canonical_of: 'default/sources/example/snapshots/2026-08-25',
+      },
+    });
+    await addPage('sources/example/snapshots/2026-08-25', {
+      hash: 'same',
+      frontmatter: {
+        snapshot_of: 'default/sources/example/current',
+      },
+    });
+    await addPage('sources/example/undeclared-copy', { hash: 'same' });
+
+    const c = await checkContentHashDuplicates(engine);
+
+    expect(c.status).toBe('warn');
+    expect(c.message).toContain('sources/example/undeclared-copy');
+    expect((c.details as any).exempted_mirror_pair_count).toBe(1);
+    expect((c.details as any).distinct_slug_group_count).toBe(1);
+    expect((c.details as any).hash_groups).toBe(1);
+    expect((c.details as any).undeclared_hash_groups).toBe(1);
+  });
+
+  test('declared mirror groups cannot consume the scan cap and hide a later undeclared group', async () => {
+    for (let i = 0; i < 50; i++) {
+      const suffix = String(i).padStart(2, '0');
+      const current = `sources/series-${suffix}/current`;
+      const snapshot = `sources/series-${suffix}/snapshots/2026-08-25`;
+      await addPage(current, {
+        hash: `a-${suffix}`,
+        frontmatter: { canonical_of: `default/${snapshot}` },
+      });
+      await addPage(snapshot, {
+        hash: `a-${suffix}`,
+        frontmatter: { snapshot_of: `default/${current}` },
+      });
+    }
+    await addPage('notes/undeclared-a', { hash: 'z-undeclared' });
+    await addPage('archive/undeclared-a', { hash: 'z-undeclared' });
+
+    const c = await checkContentHashDuplicates(engine);
+
+    expect(c.status).toBe('warn');
+    expect(c.message).toContain('undeclared-a');
+    expect((c.details as any).exempted_mirror_pair_count).toBe(50);
+    expect((c.details as any).undeclared_hash_groups).toBe(1);
+  });
+
   test('distinct hashes → ok', async () => {
     await addPage('people/alice-example');
     await addPage('projects/widget-co');

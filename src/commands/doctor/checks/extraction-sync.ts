@@ -24,6 +24,7 @@ import {
 import { slugifyPath, slugifyCodePath, isCodeFilePath } from '../../../core/sync.ts';
 import { resolveSourceLocalFilePath } from '../../../core/markdown.ts';
 import { unverifiedExtractionFragment } from '../../../core/extraction-review.ts';
+import { runExtractFacts } from '../../../core/cycle/extract-facts.ts';
 import type { Check } from '../../doctor.ts';
 
 /** Local aliases; the shared warn-once memo lives in core so it can't fork per module. */
@@ -222,24 +223,140 @@ export async function checkContentHashDuplicates(engine: BrainEngine): Promise<C
     // safe); a group WITHOUT that shape (all-nested, or distinct bare slugs)
     // is listed with NO delete hint (#3942 — either copy may be the canonical
     // one that links point at, so deleting one automatically is a guess).
-    const rows = await engine.executeRaw<{ source_id: string; content_hash: string; slugs: string }>(
-      `SELECT source_id, content_hash,
-              string_agg(slug, '|' ORDER BY length(slug), slug) AS slugs
-         FROM pages
-        WHERE deleted_at IS NULL AND content_hash IS NOT NULL AND content_hash <> ''
-        GROUP BY source_id, content_hash
-       HAVING count(*) > 1
-        LIMIT 50`,
+    type DuplicatePage = {
+      source_id: string;
+      content_hash: string;
+      slug: string;
+      frontmatter: Record<string, unknown> | string | null;
+    };
+    const summaryRows = await engine.executeRaw<{ hash_groups: number | string; mirror_pairs: number | string }>(
+      `WITH duplicate_groups AS (
+         SELECT source_id, content_hash
+           FROM pages
+          WHERE deleted_at IS NULL AND content_hash IS NOT NULL AND content_hash <> ''
+          GROUP BY source_id, content_hash
+         HAVING count(*) > 1
+       ), declared_pairs AS (
+         SELECT c.source_id, c.content_hash, c.slug AS canonical_slug, s.slug AS snapshot_slug
+           FROM pages c
+           JOIN pages s
+             ON s.source_id = c.source_id
+            AND s.content_hash = c.content_hash
+            AND s.id <> c.id
+            AND c.frontmatter->>'canonical_of' = c.source_id || '/' || s.slug
+            AND s.frontmatter->>'snapshot_of' = c.source_id || '/' || c.slug
+          WHERE c.deleted_at IS NULL AND s.deleted_at IS NULL
+            AND c.content_hash IS NOT NULL AND c.content_hash <> ''
+       )
+       SELECT
+         (SELECT count(*)::int FROM duplicate_groups) AS hash_groups,
+         (SELECT count(*)::int FROM declared_pairs) AS mirror_pairs`,
+      [],
+    );
+    const totalHashGroups = Number(summaryRows[0]?.hash_groups ?? 0);
+    const exemptedMirrorPairCount = Number(summaryRows[0]?.mirror_pairs ?? 0);
+    const rows = await engine.executeRaw<DuplicatePage>(
+      `WITH duplicate_groups AS (
+         SELECT source_id, content_hash, count(*)::int AS page_count
+           FROM pages
+          WHERE deleted_at IS NULL AND content_hash IS NOT NULL AND content_hash <> ''
+          GROUP BY source_id, content_hash
+         HAVING count(*) > 1
+       ), undeclared_groups AS (
+         SELECT d.source_id, d.content_hash
+           FROM duplicate_groups d
+          WHERE NOT (
+            d.page_count = 2 AND EXISTS (
+              SELECT 1
+                FROM pages c
+                JOIN pages s
+                  ON s.source_id = c.source_id
+                 AND s.content_hash = c.content_hash
+                 AND s.id <> c.id
+                 AND c.frontmatter->>'canonical_of' = c.source_id || '/' || s.slug
+                 AND s.frontmatter->>'snapshot_of' = c.source_id || '/' || c.slug
+               WHERE c.source_id = d.source_id
+                 AND c.content_hash = d.content_hash
+                 AND c.deleted_at IS NULL
+                 AND s.deleted_at IS NULL
+            )
+          )
+          ORDER BY source_id, content_hash
+          LIMIT 50
+       )
+       SELECT p.source_id, p.content_hash, p.slug, p.frontmatter
+         FROM pages p
+         JOIN undeclared_groups d
+           ON d.source_id = p.source_id AND d.content_hash = p.content_hash
+        WHERE p.deleted_at IS NULL
+        ORDER BY p.source_id, p.content_hash, length(p.slug), p.slug`,
     );
     if (rows.length === 0) {
-      return { name, status: 'ok', message: 'No same-source content-hash duplicate groups' };
+      if (exemptedMirrorPairCount === 0) {
+        return { name, status: 'ok', message: 'No same-source content-hash duplicate groups' };
+      }
+      return {
+        name,
+        status: 'ok',
+        message: `No undeclared same-source content-hash duplicates (${exemptedMirrorPairCount} declared canonical/snapshot mirror pair(s))`,
+        details: {
+          pair_count: 0,
+          hash_groups: totalHashGroups,
+          undeclared_hash_groups: 0,
+          sample_pairs: [],
+          distinct_slug_group_count: 0,
+          sample_distinct_slug_groups: [],
+          exempted_mirror_pair_count: exemptedMirrorPairCount,
+          sample_exempted_mirror_pairs: [],
+        },
+      };
     }
+
+    const groups = new Map<string, DuplicatePage[]>();
+    for (const row of rows) {
+      const key = `${row.source_id}\u0000${row.content_hash}`;
+      const group = groups.get(key) ?? [];
+      group.push(row);
+      groups.set(key, group);
+    }
+
+    const frontmatterOf = (page: DuplicatePage): Record<string, unknown> => {
+      if (page.frontmatter && typeof page.frontmatter === 'object') return page.frontmatter;
+      if (typeof page.frontmatter === 'string') {
+        try {
+          const parsed = JSON.parse(page.frontmatter);
+          return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+        } catch { /* malformed metadata cannot grant an exemption */ }
+      }
+      return {};
+    };
+    const qualifiedSlug = (page: DuplicatePage): string => `${page.source_id}/${page.slug}`;
     let pairCount = 0;
     const samples: string[] = [];
     let otherGroupCount = 0;
     const otherSamples: string[] = [];
-    for (const r of rows) {
-      const slugs = String(r.slugs).split('|');
+    const exemptedMirrorSamples: string[] = [];
+    let undeclaredGroupCount = 0;
+    for (const group of groups.values()) {
+      // O(n) reciprocal lookup. A scalar pointer can exempt at most one
+      // counterpart; any group with >2 pages necessarily retains undeclared
+      // cross-pairs and all of its pages remain visible in the warning.
+      const byQualifiedSlug = new Map(group.map(page => [qualifiedSlug(page), page]));
+      let exactPair = false;
+      for (const page of group) {
+        const targetRef = frontmatterOf(page).canonical_of;
+        if (typeof targetRef !== 'string') continue;
+        const target = byQualifiedSlug.get(targetRef);
+        if (target && frontmatterOf(target).snapshot_of === qualifiedSlug(page)) {
+          exactPair = true;
+          if (exemptedMirrorSamples.length < 5) {
+            exemptedMirrorSamples.push(`${page.slug} <-> ${target.slug}`);
+          }
+        }
+      }
+      if (group.length === 2 && exactPair) continue;
+      undeclaredGroupCount++;
+      const slugs = group.map(p => p.slug);
       const bare = slugs.filter(s => !s.includes('/'));
       const prefixed = slugs.filter(s => s.includes('/'));
       if (bare.length > 0 && prefixed.length > 0) {
@@ -253,6 +370,7 @@ export async function checkContentHashDuplicates(engine: BrainEngine): Promise<C
         if (otherSamples.length < 5) otherSamples.push(slugs.join(' == '));
       }
     }
+
     const parts: string[] = [];
     if (pairCount > 0) {
       parts.push(
@@ -274,10 +392,13 @@ export async function checkContentHashDuplicates(engine: BrainEngine): Promise<C
       message: parts.join(' '),
       details: {
         pair_count: pairCount,
-        hash_groups: rows.length,
+        hash_groups: totalHashGroups,
+        undeclared_hash_groups: undeclaredGroupCount,
         sample_pairs: samples,
         distinct_slug_group_count: otherGroupCount,
         sample_distinct_slug_groups: otherSamples,
+        exempted_mirror_pair_count: exemptedMirrorPairCount,
+        sample_exempted_mirror_pairs: exemptedMirrorSamples,
       },
     };
   } catch (e) {
@@ -735,24 +856,90 @@ export async function computeExtractHealthCheck(
       0,
     );
 
-    // High halt rates: per F-OUT-19 doctor surfaces extractor health
-    // distinctly from rollup write health.
-    const highHaltKinds = kinds.filter(k => k.halt_rate > 0.10);
+    type FactsFenceProbe = {
+      guard_triggered: boolean;
+      legacy_rows_pending: number;
+      source_ids: string[];
+    };
+    let factsFenceProbe: FactsFenceProbe | null = null;
+    if (kinds.some(k => k.kind === 'facts.fence')) {
+      try {
+        const sourceRows = await engine.executeRaw<{ id: string }>(
+          `SELECT id FROM sources ORDER BY id`,
+          [],
+        );
+        let legacyRowsPending = 0;
+        let guardTriggered = false;
+        const sourceIds: string[] = [];
+        for (const source of sourceRows) {
+          const probe = await runExtractFacts(engine, {
+            sourceId: source.id,
+            slugs: [],
+            dryRun: true,
+          });
+          sourceIds.push(source.id);
+          legacyRowsPending += probe.legacyRowsPending;
+          guardTriggered ||= probe.guardTriggered;
+        }
+        factsFenceProbe = {
+          guard_triggered: guardTriggered,
+          legacy_rows_pending: legacyRowsPending,
+          source_ids: sourceIds,
+        };
+      } catch {
+        // If the read-only actionability probe is unavailable, preserve the
+        // historical warning. A failed probe must never hide a real jam.
+      }
+    }
 
-    if (highHaltKinds.length > 0) {
-      const top3 = [...highHaltKinds]
+    // High halt rates: per F-OUT-19 doctor surfaces extractor health
+    // distinctly from rollup write health. facts.fence is special: its
+    // 7-day rollup is durable incident history, while the empty-fence guard
+    // can recover immediately after a backfill. Only classify that history
+    // as currently actionable when a read-only runExtractFacts probe still
+    // reports the guard active. Other extractors keep the rate-only rule.
+    const historicalHighHaltKinds = kinds.filter(k => k.halt_rate > 0.10);
+    const factsFenceKind = kinds.find(k => k.kind === 'facts.fence');
+    const factsFenceClear = factsFenceProbe?.guard_triggered === false
+      && factsFenceProbe.legacy_rows_pending === 0;
+    const factsFenceActive = factsFenceProbe?.guard_triggered === true
+      || (factsFenceProbe?.legacy_rows_pending ?? 0) > 0;
+    const actionableHighHaltKinds = historicalHighHaltKinds.filter(k =>
+      k.kind !== 'facts.fence' || !factsFenceClear,
+    );
+
+    if (actionableHighHaltKinds.length > 0) {
+      const top3 = [...actionableHighHaltKinds]
         .sort((a, b) => b.halt_rate - a.halt_rate)
         .slice(0, 3)
         .map(k => `${k.kind}=${(k.halt_rate * 100).toFixed(1)}%`)
         .join(', ');
+      const activeFenceNote = factsFenceActive
+        ? `; facts.fence current guard active (${factsFenceProbe!.legacy_rows_pending} legacy row(s) pending)`
+        : '';
       return {
         name,
         status: 'warn',
-        message: `${highHaltKinds.length} kind(s) with halt rate > 10% (top: ${top3})`,
+        message: `${actionableHighHaltKinds.length} kind(s) with actionable halt rate > 10% (top: ${top3})${activeFenceNote}`,
         details: {
           schema_version: 1,
           kinds,
           rollup_write_failures_7d: totalRollupFailures,
+          ...(factsFenceProbe ? { facts_fence_probe: factsFenceProbe } : {}),
+        },
+      };
+    }
+
+    if (factsFenceActive) {
+      return {
+        name,
+        status: 'warn',
+        message: `facts.fence current guard active (${factsFenceProbe!.legacy_rows_pending} legacy row(s) pending); historical halt rate is ${((factsFenceKind?.halt_rate ?? 0) * 100).toFixed(1)}%`,
+        details: {
+          schema_version: 1,
+          kinds,
+          rollup_write_failures_7d: totalRollupFailures,
+          facts_fence_probe: factsFenceProbe,
         },
       };
     }
@@ -770,6 +957,7 @@ export async function computeExtractHealthCheck(
           schema_version: 1,
           kinds,
           rollup_write_failures_7d: totalRollupFailures,
+          ...(factsFenceProbe ? { facts_fence_probe: factsFenceProbe } : {}),
         },
       };
     }
@@ -781,14 +969,20 @@ export async function computeExtractHealthCheck(
     const capNote = totalExpectedLimits > 0
       ? `; ${totalExpectedLimits} run(s) stopped at expected budget/deadline caps (capacity, not failures)`
       : '';
+    const recoveredFactsFence = factsFenceClear
+      && historicalHighHaltKinds.some(k => k.kind === 'facts.fence');
+
     return {
       name,
       status: 'ok',
-      message: `${kinds.length} kind(s) tracked, all halt rates below 10%${capNote}`,
+      message: recoveredFactsFence
+        ? `facts.fence has historical halt telemetry, but the current guard is clear (${factsFenceProbe!.legacy_rows_pending} legacy rows pending)${capNote}`
+        : `${kinds.length} kind(s) tracked, all actionable halt rates below 10%${capNote}`,
       details: {
         schema_version: 1,
         kinds,
         rollup_write_failures_7d: totalRollupFailures,
+        ...(factsFenceProbe ? { facts_fence_probe: factsFenceProbe } : {}),
       },
     };
   } catch (err) {

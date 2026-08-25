@@ -26,6 +26,9 @@ afterAll(async () => {
 
 async function clearRollup() {
   await engine.executeRaw('DELETE FROM extract_rollup_7d', []);
+  await engine.executeRaw('DELETE FROM facts', []);
+  await engine.executeRaw('DELETE FROM pages', []);
+  await engine.executeRaw(`UPDATE sources SET local_path = NULL WHERE id = 'default'`, []);
 }
 
 describe('computeExtractHealthCheck — empty + happy paths', () => {
@@ -57,6 +60,118 @@ describe('computeExtractHealthCheck — empty + happy paths', () => {
 });
 
 describe('computeExtractHealthCheck — WARN paths', () => {
+  test('recovered facts.fence keeps historical halt telemetry without an active warning', async () => {
+    await clearRollup();
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count, halt_count, round_completed_count, rollup_write_failures, updated_at)
+       VALUES ('facts.fence', 'default', CURRENT_DATE, 0, 0, 0, 32, 19, 0, NOW())`,
+      [],
+    );
+
+    const check = await computeExtractHealthCheck(engine);
+
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('historical');
+    expect(check.message).toContain('current guard is clear');
+    expect((check.details as any)?.kinds[0]).toMatchObject({
+      kind: 'facts.fence',
+      halt_count: 32,
+      round_completed_count: 19,
+    });
+    expect((check.details as any)?.facts_fence_probe).toEqual({
+      guard_triggered: false,
+      legacy_rows_pending: 0,
+      source_ids: ['default'],
+    });
+  });
+
+  test('facts.fence stays actionable while the read-only guard probe is active', async () => {
+    await clearRollup();
+    await engine.executeRaw(
+      `UPDATE sources SET local_path = '/tmp/gbrain-doctor-extract-health' WHERE id = 'default'`,
+      [],
+    );
+    await engine.putPage('people/pending-example', {
+      title: 'Pending Example',
+      type: 'person',
+      compiled_truth: '# Pending Example',
+      frontmatter: {},
+      timeline: '',
+    });
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          source, confidence, source_markdown_slug, row_num)
+       VALUES ('default', 'people/pending-example', 'Legacy claim', 'fact', 'world',
+               'medium', 'test', 1.0, NULL, NULL)`,
+      [],
+    );
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, cost_usd, eval_pass_count, eval_fail_count, halt_count, round_completed_count, rollup_write_failures, updated_at)
+       VALUES ('facts.fence', 'default', CURRENT_DATE, 0, 0, 0, 32, 19, 0, NOW())`,
+      [],
+    );
+
+    const check = await computeExtractHealthCheck(engine);
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('facts.fence');
+    expect(check.message).toContain('current guard active');
+    expect((check.details as any)?.facts_fence_probe).toEqual({
+      guard_triggered: true,
+      legacy_rows_pending: 1,
+      source_ids: ['default'],
+    });
+
+  });
+
+  test('active facts.fence guard warns without claiming a low historical halt rate exceeds 10%', async () => {
+    await clearRollup();
+    await engine.executeRaw(
+      `UPDATE sources SET local_path = '/tmp/gbrain-doctor-extract-health' WHERE id = 'default'`,
+      [],
+    );
+    await engine.putPage('people/pending-example', {
+      title: 'Pending Example', type: 'person', compiled_truth: '# Pending', frontmatter: {}, timeline: '',
+    });
+    await engine.executeRaw(
+      `INSERT INTO facts (source_id, entity_slug, fact, source)
+       VALUES ('default', 'people/pending-example', 'Legacy claim', 'test')`,
+      [],
+    );
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, halt_count, round_completed_count)
+       VALUES ('facts.fence', 'default', CURRENT_DATE, 0, 10)`,
+      [],
+    );
+
+    const check = await computeExtractHealthCheck(engine);
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('current guard active');
+    expect(check.message).not.toContain('halt rate > 10%');
+  });
+
+  test('recovered facts.fence does not suppress another kind with a high halt rate', async () => {
+    await clearRollup();
+    await engine.executeRaw(
+      `INSERT INTO extract_rollup_7d (kind, source_id, day, halt_count, round_completed_count)
+       VALUES
+         ('facts.fence', 'default', CURRENT_DATE, 32, 19),
+         ('atoms', 'default', CURRENT_DATE, 5, 5)`,
+      [],
+    );
+
+    const check = await computeExtractHealthCheck(engine);
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('atoms=50.0%');
+    expect(check.message).not.toContain('facts.fence=62.7%');
+    expect((check.details as any).kinds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'facts.fence', halt_count: 32 }),
+      expect.objectContaining({ kind: 'atoms', halt_count: 5 }),
+    ]));
+  });
+
   test('halt rate > 10% on one kind returns WARN with top-3 in message', async () => {
     await clearRollup();
     // facts.conversation: 5 halts, 5 completed = 50% halt rate (WARN)
