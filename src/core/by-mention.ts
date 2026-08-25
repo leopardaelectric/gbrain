@@ -86,7 +86,7 @@ export type Gazetteer = Map<string, GazetteerEntry[]>;
 export function gazetteerFingerprint(gazetteer: Gazetteer): string {
   const entries = Array.from(gazetteer.values())
     .flat()
-    .map((entry) => [entry.source_id, entry.slug, ...entry.tokens].join('\u0000'))
+    .map((entry) => [entry.source_id, entry.slug, entry.title, ...entry.tokens].join('\u0000'))
     .sort();
   return createHash('sha256')
     .update(entries.join('\u0001'))

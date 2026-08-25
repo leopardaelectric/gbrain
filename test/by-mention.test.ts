@@ -89,6 +89,12 @@ test('gazetteer fingerprint changes when entries change under the same first-tok
 
   expect([...first.keys()]).toEqual([...second.keys()]);
   expect(gazetteerFingerprint(first)).not.toBe(gazetteerFingerprint(second));
+
+  const renamed = gazetteerFromEntries([
+    { slug: 'companies/acme-one', source_id: 'default', title: 'ACME One' },
+  ]);
+  expect(first.get('acme')![0]!.tokens).toEqual(renamed.get('acme')![0]!.tokens);
+  expect(gazetteerFingerprint(first)).not.toBe(gazetteerFingerprint(renamed));
 });
 
 // ============================================================
