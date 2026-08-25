@@ -55,12 +55,13 @@ async function seedLegacyFact(input: {
   source_id?: string;
   visibility?: 'private' | 'world';
   notability?: 'high' | 'medium' | 'low';
+  valid_from?: string;
 }): Promise<number> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const r = await (engine as any).db.query(
     `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
                         valid_from, source, confidence)
-     VALUES ($1, $2, $3, 'fact', $4, $5, now(), 'mcp:put_page', 1.0)
+     VALUES ($1, $2, $3, 'fact', $4, $5, COALESCE($6::timestamptz, now()), 'mcp:put_page', 1.0)
      RETURNING id`,
     [
       input.source_id ?? 'default',
@@ -68,6 +69,7 @@ async function seedLegacyFact(input: {
       input.fact,
       input.visibility ?? 'private',
       input.notability ?? 'medium',
+      input.valid_from ?? null,
     ],
   );
   return r.rows[0].id;
@@ -272,7 +274,11 @@ describe('phaseBFenceFacts — partial-run recovery', () => {
   }
 
   test('reclaims an exact fence-slot duplicate created by sync after a partial run', async () => {
-    const legacyId = await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Founded Acme' });
+    const legacyId = await seedLegacyFact({
+      entity_slug: 'people/alice',
+      fact: 'Founded Acme',
+      valid_from: '2026-08-23T00:00:00Z',
+    });
     mkdirSync(join(brainDir, 'people'), { recursive: true });
     writeFileSync(join(brainDir, 'people/alice.md'), pageWithFacts(['Founded Acme']), 'utf-8');
 
