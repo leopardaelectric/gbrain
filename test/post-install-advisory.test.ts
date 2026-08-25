@@ -90,6 +90,17 @@ describe('detectInstalledSlugs', () => {
     expect(set.has('idea-ingest')).toBe(true);
     expect(set.size).toBe(2);
   });
+
+  it('detects scaffold-owned skill directories without a legacy receipt', () => {
+    const { workspace, skillsDir } = scratchWorkspace(null);
+    const skillDir = join(skillsDir, 'cold-start');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, 'SKILL.md'), '# Cold Start\n');
+
+    const set = detectInstalledSlugs(skillsDir, workspace);
+
+    expect(set.has('cold-start')).toBe(true);
+  });
 });
 
 describe('recommended set — OOBE invariants', () => {

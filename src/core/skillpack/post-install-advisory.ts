@@ -31,7 +31,7 @@
  *   - Pre-v0.19 fence with no receipt → use the row-extracted slug set.
  */
 
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { findResolverFile } from '../resolver-filenames.ts';
 import { extractManagedSlugs, parseReceipt } from './installer.ts';
 import { autoDetectSkillsDir } from '../repo-root.ts';
@@ -47,11 +47,28 @@ import { renderRecommendedSkills } from '../advisor/render.ts';
 export function detectInstalledSlugs(targetSkillsDir: string, targetWorkspace: string): Set<string> {
   const resolver =
     findResolverFile(targetSkillsDir) ?? findResolverFile(targetWorkspace);
-  if (!resolver) return new Set();
-  const content = readFileSync(resolver, 'utf-8');
-  const receipt = parseReceipt(content);
-  if (receipt) return new Set(receipt.cumulativeSlugs);
-  return new Set(extractManagedSlugs(content));
+  const installed = new Set<string>();
+  if (resolver) {
+    const content = readFileSync(resolver, 'utf-8');
+    const receipt = parseReceipt(content);
+    const managed = receipt?.cumulativeSlugs ?? extractManagedSlugs(content);
+    for (const slug of managed) installed.add(slug);
+  }
+
+  // v0.33+ scaffolds user-owned skill directories and no longer requires a
+  // managed RESOLVER receipt. Directory presence is therefore the current
+  // install truth; the legacy receipt remains additive for older workspaces.
+  try {
+    for (const entry of readdirSync(targetSkillsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (existsSync(resolvePath(targetSkillsDir, entry.name, 'SKILL.md'))) {
+        installed.add(entry.name);
+      }
+    }
+  } catch {
+    // An unreadable skills directory leaves receipt-derived detection intact.
+  }
+  return installed;
 }
 
 /**
