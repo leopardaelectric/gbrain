@@ -375,12 +375,33 @@ export async function buildGazetteer(
   opts: BuildGazetteerOpts = {},
 ): Promise<Gazetteer> {
   const typeList = LINKABLE_ENTITY_TYPES.map(t => `'${t}'`).join(', ');
-  const rows = await engine.executeRaw<{ slug: string; source_id: string | null; title: string | null; type: string | null }>(
-    `SELECT slug, source_id, title, type
-     FROM pages
-     WHERE type IN (${typeList})
-       AND deleted_at IS NULL`,
+  const rows = await engine.executeRaw<{
+    slug: string;
+    source_id: string | null;
+    title: string | null;
+    type: string | null;
+    is_slack_user: boolean;
+    is_bot: boolean;
+  }>(
+    `SELECT p.slug, p.source_id, p.title, p.type,
+            EXISTS (
+              SELECT 1 FROM tags t
+              WHERE t.page_id = p.id AND t.tag = 'slack-user'
+            ) AS is_slack_user,
+            EXISTS (
+              SELECT 1 FROM tags t
+              WHERE t.page_id = p.id AND t.tag = 'bot'
+            ) AS is_bot
+     FROM pages p
+     WHERE p.type IN (${typeList})
+       AND p.deleted_at IS NULL`,
     [],
+  );
+
+  const slackUserKeys = new Set(
+    rows
+      .filter((row) => row.is_slack_user)
+      .map((row) => `${row.source_id ?? 'default'}\u0000${row.slug}`),
   );
 
   // Pre-build the existing-slug Set so the ignore-list rule can check
@@ -394,6 +415,8 @@ export async function buildGazetteer(
   const gazetteer: Gazetteer = new Map();
   for (const row of rows) {
     if (!row.title) continue;
+    // Slack bot titles are integration labels, not prose-linkable people.
+    if (row.is_slack_user && row.is_bot) continue;
     if (!hasCJK(row.title) && row.title.length < MIN_NAME_LENGTH) continue;
     if (hasCJK(row.title) && cjkCharCount(row.title) < MIN_CJK_NAME_LENGTH) continue;
     // NOTE (v0.46.15, deliberately preserved): for TITLES this condition is
@@ -483,6 +506,9 @@ export async function buildGazetteer(
       seenAliasEntry.add(dedupeKey);
       const tokens = tokenizeTitle(alias);
       if (tokens.length === 0) continue;
+      // Keep Slack aliases in page_aliases for exact resolution, but do not
+      // turn nickname-shaped single tokens into broad body-text mentions.
+      if (tokens.length === 1 && slackUserKeys.has(`${src}\u0000${a.slug}`)) continue;
       if (tokens[0]!.length < MIN_NAME_LENGTH && tokens.length === 1) continue;
       const entry: GazetteerEntry = { slug: a.slug, source_id: src, title: a.title, tokens };
       const key = tokens[0]!;

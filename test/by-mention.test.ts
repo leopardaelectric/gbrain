@@ -659,6 +659,61 @@ describe('buildGazetteer — engine integration', () => {
     expect(bucket!.some((e) => e.slug === 'people/saoirse-x')).toBe(true);
   });
 
+  test('Slack human identity: full multi-word title still links', async () => {
+    await engine.putPage('people/alice-example', {
+      type: 'person', title: 'Alice Example', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.addTag('people/alice-example', 'slack-user');
+
+    const g = await buildGazetteer(engine);
+    const mentions = findMentionedEntities('Alice Example joined the review.', g, {
+      fromSlug: 'notes/review', fromSourceId: 'default',
+    });
+
+    expect(mentions.map((m) => m.slug)).toContain('people/alice-example');
+  });
+
+  test('Slack human identity: single-token alias stays exact-resolvable but leaves the mention gazetteer', async () => {
+    await engine.putPage('people/alice-example', {
+      type: 'person', title: 'Alice Example', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.addTag('people/alice-example', 'slack-user');
+    await engine.setPageAliases('people/alice-example', 'default', ['alice']);
+
+    const g = await buildGazetteer(engine);
+    const exact = await engine.resolveAliases(['alice'], { sourceId: 'default' });
+
+    expect((g.get('alice') ?? []).some((e) => e.tokens.length === 1)).toBe(false);
+    expect(exact.get('alice')).toEqual([
+      { slug: 'people/alice-example', source_id: 'default' },
+    ]);
+  });
+
+  test('Slack bot identity: title does not enter the mention gazetteer', async () => {
+    await engine.putPage('people/build-relay', {
+      type: 'person', title: 'Build Relay', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.addTag('people/build-relay', 'slack-user');
+    await engine.addTag('people/build-relay', 'bot');
+
+    const g = await buildGazetteer(engine);
+
+    expect((g.get('build') ?? []).some((e) => e.slug === 'people/build-relay')).toBe(false);
+  });
+
+  test('non-Slack entity: single-token alias remains mention-linkable', async () => {
+    await engine.putPage('people/casey-example', {
+      type: 'person', title: 'Casey Example', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.setPageAliases('people/casey-example', 'default', ['casey']);
+
+    const g = await buildGazetteer(engine);
+
+    expect((g.get('casey') ?? []).some((e) =>
+      e.slug === 'people/casey-example' && e.tokens.length === 1,
+    )).toBe(true);
+  });
+
   test('REGRESSION (v0.46.15): ignore-list rejects ALIAS entries case-insensitively; CK12 title behavior unchanged', async () => {
     // Title side (unchanged CK12 policy): a real page titled "Apple" stays.
     await engine.putPage('companies/apple', {
