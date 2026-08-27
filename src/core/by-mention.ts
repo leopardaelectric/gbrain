@@ -416,6 +416,11 @@ export async function buildGazetteer(
       .filter((row) => row.is_slack_user)
       .map((row) => `${row.source_id ?? 'default'}\u0000${row.slug}`),
   );
+  const slackBotKeys = new Set(
+    rows
+      .filter((row) => row.is_slack_user && row.is_bot)
+      .map((row) => `${row.source_id ?? 'default'}\u0000${row.slug}`),
+  );
 
   // Pre-build the existing-slug Set so the ignore-list rule can check
   // "does this name already correspond to a real page?" in O(1).
@@ -439,6 +444,7 @@ export async function buildGazetteer(
     const tokens = tokenizeTitle(row.title);
     if (tokens.length === 0) continue;
     if (tokens[0]!.length < MIN_NAME_LENGTH && tokens.length === 1) continue;
+    if (row.is_slack_user && tokens.length === 1) continue;
     if (tokens.length === 1 && row.type === 'person' && isGenericEntityToken(tokens[0]!)) continue;
 
     const sourceId = row.source_id ?? 'default';
@@ -478,6 +484,8 @@ export async function buildGazetteer(
   //   - ignore-list applies CASE-INSENSITIVELY with NO existing-page escape
   //     (aliases store normalized lowercase; DEFAULT_IGNORE_LIST is cased)
   //   - aliases mapping to >1 slug within a source are skipped (ambiguous)
+  //   - every alias owned by a Slack bot is skipped
+  //   - single-token aliases owned by Slack users are skipped as ambiguous
   //   - aliases colliding with any existing page TITLE in the SAME source
   //     are skipped (the title entry wins; per-source scoping per R2-9)
   //   - MIN_NAME_LENGTH applies to the alias string
@@ -504,6 +512,7 @@ export async function buildGazetteer(
       const alias = a.alias_norm?.trim();
       if (!alias || !a.title) continue;
       const src = a.source_id ?? 'default';
+      if (slackBotKeys.has(`${src}\u0000${a.slug}`)) continue;
       if (alias.length < MIN_NAME_LENGTH && !hasCJK(alias)) continue;
       if (hasCJK(alias) && cjkCharCount(alias) < MIN_CJK_NAME_LENGTH) continue;
       if (ignoreLc.has(alias.toLowerCase())) continue;

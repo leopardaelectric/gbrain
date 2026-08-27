@@ -754,6 +754,44 @@ describe('buildGazetteer — engine integration', () => {
     expect((g.get('build') ?? []).some((e) => e.slug === 'people/build-relay')).toBe(false);
   });
 
+  test('Slack bot identity: multi-word aliases do not enter the mention gazetteer', async () => {
+    await engine.putPage('people/google-sheets', {
+      type: 'person', title: 'Build Relay', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.addTag('people/google-sheets', 'slack-user');
+    await engine.addTag('people/google-sheets', 'bot');
+    await engine.setPageAliases('people/google-sheets', 'default', ['google sheets']);
+
+    const g = await buildGazetteer(engine);
+
+    expect((g.get('google') ?? []).some((e) => e.slug === 'people/google-sheets')).toBe(false);
+  });
+
+  test('Slack human identity: ambiguous single-token title leaves the mention gazetteer', async () => {
+    await engine.putPage('people/paulo', {
+      type: 'person', title: 'Paulo', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.addTag('people/paulo', 'slack-user');
+
+    const g = await buildGazetteer(engine);
+
+    expect((g.get('paulo') ?? []).some((e) => e.slug === 'people/paulo')).toBe(false);
+  });
+
+  test('Slack human identity: ambiguous single-token alias leaves the mention gazetteer', async () => {
+    await engine.putPage('people/arthur-example', {
+      type: 'person', title: 'Arthur Example', compiled_truth: 'b', timeline: '', frontmatter: {},
+    });
+    await engine.addTag('people/arthur-example', 'slack-user');
+    await engine.setPageAliases('people/arthur-example', 'default', ['arthur']);
+
+    const g = await buildGazetteer(engine);
+
+    expect((g.get('arthur') ?? []).some((e) =>
+      e.slug === 'people/arthur-example' && e.tokens.length === 1,
+    )).toBe(false);
+  });
+
   test('non-Slack entity: single-token alias remains mention-linkable', async () => {
     await engine.putPage('people/casey-example', {
       type: 'person', title: 'Casey Example', compiled_truth: 'b', timeline: '', frontmatter: {},

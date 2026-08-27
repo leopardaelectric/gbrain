@@ -218,6 +218,61 @@ describe('junk_entity_hubs doctor check (#4222)', () => {
     expect(check.status).toBe('ok');
   });
 
+  test('high-degree legitimate identity and index pages are not classified as junk hubs', async () => {
+    await engine.putPage('people/alice-example', {
+      type: 'person', title: 'Alice Example', compiled_truth: 'identity glue', timeline: '',
+    });
+    await engine.addTag('people/alice-example', 'slack-user');
+    await engine.putPage('loops/maintenance/index', {
+      type: 'concept', title: 'Maintenance Alerts', compiled_truth: 'loop index', timeline: '',
+    });
+    const batch: LinkBatchInput[] = [];
+    for (let i = 0; i < 4; i++) {
+      const slug = `notes/legit-${i}`;
+      await engine.putPage(slug, { type: 'note', title: `Legit ${i}`, compiled_truth: 'body', timeline: '' });
+      batch.push({ from_slug: slug, to_slug: 'people/alice-example', link_source: 'mentions' });
+      batch.push({ from_slug: slug, to_slug: 'loops/maintenance/index', link_source: 'manual' });
+    }
+    await engine.addLinksBatch(batch);
+
+    const check = await checkJunkEntityHubs(engine, { edgeThreshold: 3, maxChunks: 2 });
+
+    expect(check.status).toBe('ok');
+  });
+
+  test('finds a junk hub below 20 higher-degree legitimate hubs', async () => {
+    const batch: LinkBatchInput[] = [];
+    for (let hub = 0; hub < 21; hub++) {
+      const hubSlug = `people/legitimate-${hub}`;
+      await engine.putPage(hubSlug, {
+        type: 'person', title: `Legitimate Person ${hub}`, compiled_truth: 'identity glue', timeline: '',
+      });
+      for (let edge = 0; edge < 5; edge++) {
+        const noteSlug = `notes/legitimate-${hub}-${edge}`;
+        await engine.putPage(noteSlug, {
+          type: 'note', title: `Legitimate ${hub} ${edge}`, compiled_truth: 'body', timeline: '',
+        });
+        batch.push({ from_slug: noteSlug, to_slug: hubSlug, link_source: 'mentions' });
+      }
+    }
+    await engine.putPage('people/will', {
+      type: 'person', title: 'Will', compiled_truth: '', timeline: '',
+    });
+    for (let edge = 0; edge < 4; edge++) {
+      const noteSlug = `notes/will-below-limit-${edge}`;
+      await engine.putPage(noteSlug, {
+        type: 'note', title: `Will Below Limit ${edge}`, compiled_truth: 'body', timeline: '',
+      });
+      batch.push({ from_slug: noteSlug, to_slug: 'people/will', link_source: 'mentions' });
+    }
+    await engine.addLinksBatch(batch);
+
+    const check = await checkJunkEntityHubs(engine, { edgeThreshold: 3, maxChunks: 2 });
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('people/will');
+  });
+
   test('ok on an empty brain', async () => {
     const check = await checkJunkEntityHubs(engine);
     expect(check.status).toBe('ok');

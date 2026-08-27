@@ -6,6 +6,7 @@
  */
 import type { BrainEngine } from '../../../core/engine.ts';
 import type { Check } from '../../doctor.ts';
+import { isJunkEntityName } from '../../../core/entity-name-quality.ts';
 
 /**
  * v0.40.4 graph_signals_coverage doctor check.
@@ -675,6 +676,7 @@ export async function checkJunkEntityHubs(
     const rows = await engine.executeRaw<{
       slug: string;
       source_id: string | null;
+      title: string;
       edges: number;
       mention_edges: number;
       curated_edges: number;
@@ -699,18 +701,19 @@ export async function checkJunkEntityHubs(
          FROM content_chunks
          GROUP BY page_id
        )
-       SELECT p.slug, p.source_id, ec.edges, ec.mention_edges, ec.curated_edges,
+       SELECT p.slug, p.source_id, p.title, ec.edges, ec.mention_edges, ec.curated_edges,
               COALESCE(cc.chunks, 0)::int AS chunks
        FROM edge_counts ec
        JOIN pages p ON p.id = ec.page_id AND p.deleted_at IS NULL
        LEFT JOIN chunk_counts cc ON cc.page_id = ec.page_id
        WHERE COALESCE(cc.chunks, 0) <= $2
-       ORDER BY ec.edges DESC
-       LIMIT 20`,
+       ORDER BY ec.edges DESC`,
       [edgeThreshold, maxChunks],
     );
 
-    if (rows.length === 0) {
+    const junkRows = rows.filter((row) => isJunkEntityName(row.title)).slice(0, 20);
+
+    if (junkRows.length === 0) {
       return {
         name: 'junk_entity_hubs',
         status: 'ok',
@@ -718,7 +721,7 @@ export async function checkJunkEntityHubs(
       };
     }
 
-    const list = rows
+    const list = junkRows
       .map(r =>
         `  ${r.slug}${(r.source_id ?? 'default') !== 'default' ? ` [${r.source_id}]` : ''} — ` +
         `${r.edges} edges (${r.mention_edges} mention-derived, ${r.curated_edges} curated), ${r.chunks} chunk(s)`,
@@ -728,13 +731,13 @@ export async function checkJunkEntityHubs(
       name: 'junk_entity_hubs',
       status: 'warn',
       message:
-        `${rows.length} near-empty page(s) with >${edgeThreshold} edges — likely generic-token entities ` +
+        `${junkRows.length} near-empty page(s) with >${edgeThreshold} edges — generic-token entities ` +
         `("Will", "Info") minted by an extractor and inflated by mention auto-links:\n${list}\n` +
         `Review each page and merge/delete deliberately (nothing is auto-deleted). ` +
         `New accretion is already gated: enrichEntity refuses generic single-token mints and ` +
         `buildGazetteer drops single-generic-token person titles.`,
       details: {
-        hubs: rows.map(r => ({
+        hubs: junkRows.map(r => ({
           slug: r.slug,
           source_id: r.source_id ?? 'default',
           edges: r.edges,
