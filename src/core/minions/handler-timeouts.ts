@@ -47,6 +47,7 @@
 
 const THIRTY_MIN_MS = 30 * 60 * 1000;
 const SIXTY_MIN_MS = 60 * 60 * 1000;
+const TWO_HOUR_MS = 2 * 60 * 60 * 1000;
 const TEN_MIN_MS = 10 * 60 * 1000;
 
 /**
@@ -70,6 +71,11 @@ export const HANDLER_DEFAULT_TIMEOUT_MS: Readonly<Record<string, number>> = {
   // null-default and got dead-lettered mid-generation on slow chat providers
   // (facts silently lost) — exactly the failure this file exists to prevent.
   'facts-absorb': TEN_MIN_MS,
+  // A source-wide conversation-facts pass can process hundreds of pages and
+  // make one or more model calls per page. Match the two-hour budget used by
+  // the daily maintenance job so `--background` does not inherit the short
+  // generic queue timeout and die after a few minutes.
+  'extract-conversation-facts': TWO_HOUR_MS,
   // Per-page contextual reindex jobs process chunks sequentially with one
   // rate-leased LLM synopsis call per chunk; large transcript pages need more
   // than the standard 30-min long-job budget.

@@ -373,6 +373,13 @@ describe('MinionQueue: #1737 per-handler default timeout', () => {
     expect(job.timeout_ms).toBe(10 * 60 * 1000);
   });
 
+  test('conversation-facts batch gets a 2-hour maintenance default', async () => {
+    const job = await workerBackedQueue.add('extract-conversation-facts', {
+      sourceId: 'mind-agent-brain',
+    });
+    expect(job.timeout_ms).toBe(2 * 60 * 60 * 1000);
+  });
+
   test('contextual per-chunk reindex gets the 60-min default', async () => {
     const job = await queue.add('contextual_reindex_per_chunk', { page_slug: 'large-transcript' }, undefined, {
       allowProtectedSubmit: true,
