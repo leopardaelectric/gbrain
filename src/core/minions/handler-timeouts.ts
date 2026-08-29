@@ -108,6 +108,7 @@ export const HANDLER_DEFAULT_LOCK_DURATION_MS: Readonly<Record<string, number>> 
   'autopilot-cycle': FIVE_MIN_MS,
   'autopilot-global-maintenance': FIVE_MIN_MS,
   contextual_reindex_per_chunk: FIVE_MIN_MS,
+  'extract-conversation-facts': FIVE_MIN_MS,
   chronicle_extract: TWO_MIN_MS,
   'facts-absorb': TWO_MIN_MS,
 };

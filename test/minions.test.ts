@@ -3367,6 +3367,13 @@ describe('MinionQueue: per-job lock lease (#4145)', () => {
     expect(horizon).toBeLessThan(360_000);
   });
 
+  test('conversation-facts batch gets the 300s long-handler lease', async () => {
+    const job = await queue.add('extract-conversation-facts', {
+      sourceId: 'mind-agent-brain',
+    });
+    expect(job.lock_duration_ms).toBe(300_000);
+  });
+
   test('an unmapped handler keeps NULL lease → worker default horizon (legacy behavior)', async () => {
     await queue.add('shortling', {});
     const before = Date.now();
