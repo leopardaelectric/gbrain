@@ -32,6 +32,7 @@ import {
   extractConversationFactsLockId,
   PER_PAGE_LOCK_TTL_MINUTES,
   _resetLockBusyLogCacheForTest,
+  validateConversationFactsBackgroundArgs,
 } from '../src/commands/extract-conversation-facts.ts';
 
 const REPO_ROOT = resolve(import.meta.dir, '..');
@@ -43,6 +44,19 @@ beforeEach(() => {
 });
 
 describe('extract-conversation-facts — exported helpers (T5)', () => {
+  test('--background refuses to submit a job without a source id', () => {
+    expect(validateConversationFactsBackgroundArgs([
+      '--background',
+      '--max-cost-usd',
+      '5',
+    ])).toContain('--source-id <id>');
+    expect(validateConversationFactsBackgroundArgs([
+      '--background',
+      '--source-id',
+      'mind-agent-brain',
+    ])).toBeNull();
+  });
+
   test('extractConversationFactsLockId composes source + slug', () => {
     expect(extractConversationFactsLockId('default', 'chat/alice')).toBe(
       'extract-conversation-facts:default:chat/alice',

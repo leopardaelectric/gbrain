@@ -1818,7 +1818,7 @@ Options:
                          safety is guaranteed by the per-page advisory lock + replay
                          safety (delete-orphans-first on each page claim).
   --override-disabled    Bypass facts.extraction_enabled=false brain-wide kill-switch.
-  --background           Submit as a Minion job; print job_id; exit (use 'gbrain jobs follow').
+  --background           Submit as a Minion job; requires --source-id; print job_id and exit.
   --yes                  Auto-confirm cost preview in non-TTY contexts.
   --help, -h             Show this help.
 
@@ -1854,6 +1854,16 @@ function buildJobParams(args: string[]): Record<string, unknown> {
   };
 }
 
+export function validateConversationFactsBackgroundArgs(args: string[]): string | null {
+  if (!args.includes('--background')) return null;
+  const sourceIndex = args.indexOf('--source-id');
+  const sourceId = sourceIndex >= 0 ? args[sourceIndex + 1] : undefined;
+  if (typeof sourceId !== 'string' || sourceId.length === 0 || sourceId.startsWith('--')) {
+    return '--background requires --source-id <id> so the Minion job has an explicit source';
+  }
+  return null;
+}
+
 export async function runExtractConversationFacts(
   engine: BrainEngine,
   args: string[],
@@ -1862,6 +1872,12 @@ export async function runExtractConversationFacts(
   if (args.includes('--help') || args.includes('-h')) {
     console.log(HELP);
     return;
+  }
+
+  const backgroundError = validateConversationFactsBackgroundArgs(args);
+  if (backgroundError) {
+    console.error(backgroundError);
+    process.exit(1);
   }
 
   // --background path.

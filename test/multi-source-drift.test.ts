@@ -22,7 +22,10 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runSources } from '../src/commands/sources.ts';
-import { findMisroutedPages } from '../src/core/multi-source-drift.ts';
+import {
+  findMisroutedPages,
+  resolveDriftWalkBounds,
+} from '../src/core/multi-source-drift.ts';
 
 let engine: PGLiteEngine;
 const TMP_ROOTS: string[] = [];
@@ -54,6 +57,13 @@ function seedFile(root: string, relPath: string, content = 'placeholder\n'): voi
 }
 
 describe('findMisroutedPages — heuristic correctness', () => {
+  test('doctor walk bounds honor the documented environment overrides', () => {
+    expect(resolveDriftWalkBounds({
+      GBRAIN_DRIFT_LIMIT: '75000',
+      GBRAIN_DRIFT_TIMEOUT_MS: '60000',
+    })).toEqual({ limit: 75_000, timeoutMs: 60_000 });
+  });
+
   test('case 1: no non-default sources → returns empty result (caller skips check)', async () => {
     // Findfn is called by doctor only when at least one non-default source
     // with local_path exists; passing an empty array is the equivalent.
@@ -144,6 +154,29 @@ describe('findMisroutedPages — heuristic correctness', () => {
       timeoutMs: 5000,
     });
     expect(result.walk_truncated).toBe(true);
+  });
+
+  test('case 5b: documented environment limit reaches the real walk', async () => {
+    const root = makeTmpRoot('case5b');
+    for (let i = 0; i < 12; i++) {
+      seedFile(root, `topics/file-${i}.md`);
+    }
+
+    const previousLimit = process.env.GBRAIN_DRIFT_LIMIT;
+    const previousTimeout = process.env.GBRAIN_DRIFT_TIMEOUT_MS;
+    process.env.GBRAIN_DRIFT_LIMIT = '5';
+    process.env.GBRAIN_DRIFT_TIMEOUT_MS = '5000';
+    try {
+      const result = await findMisroutedPages(engine, [
+        { id: 'src-case5b-fake', local_path: root },
+      ]);
+      expect(result.walk_truncated).toBe(true);
+    } finally {
+      if (previousLimit === undefined) delete process.env.GBRAIN_DRIFT_LIMIT;
+      else process.env.GBRAIN_DRIFT_LIMIT = previousLimit;
+      if (previousTimeout === undefined) delete process.env.GBRAIN_DRIFT_TIMEOUT_MS;
+      else process.env.GBRAIN_DRIFT_TIMEOUT_MS = previousTimeout;
+    }
   });
 
   test('case 6 (OV13): unreadable local_path does NOT crash; returns empty', async () => {

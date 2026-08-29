@@ -720,7 +720,7 @@ export async function computeConversationFactsBacklogCheck(
 
     if (backlog > 10) {
       const fixHint =
-        'gbrain extract-conversation-facts --background --max-cost-usd 5';
+        'gbrain extract-conversation-facts --source-id <id> --background --max-cost-usd 5';
       return {
         name,
         status: 'warn',
