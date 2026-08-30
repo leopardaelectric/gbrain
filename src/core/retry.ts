@@ -84,6 +84,7 @@ export const BATCH_AUDIT_SITES = [
   'extract.links_fs',
   'extract.timeline_fs',
   'extract.links_db',
+  'extract.links_db.frontmatter_reconcile',
   'extract.timeline_db',
   'extract.by_mention',
   // #3674: --rebuild reconciling delete-then-insert of the mention scan's rows.

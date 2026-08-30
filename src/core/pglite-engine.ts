@@ -3732,8 +3732,8 @@ export class PGLiteEngine implements BrainEngine {
     const payload = { pages, keep: opts.keepTypedNerPairs ?? [] };
     const rows = await executeRawJsonb(
       this,
-      `WITH scope AS (
-         SELECT f.id AS from_id
+       `WITH scope AS (
+         SELECT f.id AS from_id, f.type AS from_type
          FROM jsonb_to_recordset(($2::jsonb)->'pages') AS p(slug text, source_id text)
          JOIN pages f ON f.slug = p.slug AND f.source_id = p.source_id
        ),
@@ -3751,6 +3751,7 @@ export class PGLiteEngine implements BrainEngine {
          AND l.link_source = $1
          AND NOT (
            COALESCE(l.link_kind, '') = 'typed_ner'
+           AND s.from_type IN ('person', 'company', 'organization', 'entity')
            AND EXISTS (
              SELECT 1 FROM keep k
              WHERE k.from_id = l.from_page_id AND k.to_id = l.to_page_id
@@ -3759,6 +3760,29 @@ export class PGLiteEngine implements BrainEngine {
        RETURNING 1`,
       [opts.linkSource],
       [payload],
+    );
+    return rows.length;
+  }
+
+  async removeLinksByOriginPagesAndSource(
+    pages: Array<{ slug: string; source_id: string }>,
+    opts: { linkSource: string },
+  ): Promise<number> {
+    if (pages.length === 0) return 0;
+    const rows = await executeRawJsonb(
+      this,
+      `WITH scope AS (
+         SELECT p.id AS origin_id
+         FROM jsonb_to_recordset(($2::jsonb)->'pages') AS x(slug text, source_id text)
+         JOIN pages p ON p.slug = x.slug AND p.source_id = x.source_id
+       )
+       DELETE FROM links l
+       USING scope s
+       WHERE l.origin_page_id = s.origin_id
+         AND l.link_source = $1
+       RETURNING 1`,
+      [opts.linkSource],
+      [{ pages }],
     );
     return rows.length;
   }
@@ -4279,7 +4303,23 @@ export class PGLiteEngine implements BrainEngine {
       params.push(types);
       typeFilter = `AND l.link_type = ANY($${params.length}::text[])`;
     }
-    const mentionsFilter = opts?.includeMentions ? '' : `AND l.link_source IS DISTINCT FROM 'mentions'`;
+    // Plain body mentions are too noisy for relational recall. Deterministic
+    // verb-pattern edges carry the same provenance plus link_kind=typed_ner,
+    // but only entity pages can own those relationships. The owner-type gate
+    // also prevents legacy prose-owned typed_ner rows from entering recall.
+    const mentionsFilter = opts?.includeMentions
+      ? ''
+      : `AND (
+          l.link_source IS DISTINCT FROM 'mentions'
+          OR (
+            l.link_kind = 'typed_ner'
+            AND EXISTS (
+              SELECT 1 FROM pages typed_owner
+              WHERE typed_owner.id = l.from_page_id
+                AND typed_owner.type IN ('person', 'company', 'organization', 'entity')
+            )
+          )
+        )`;
 
     const recurStep =
       direction === 'out'

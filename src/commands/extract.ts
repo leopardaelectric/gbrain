@@ -1666,6 +1666,10 @@ async function extractLinksFromDB(
   const dryRunSeen = dryRun ? new Set<string>() : null;
 
   const batch: LinkBatchInput[] = [];
+  // Frontmatter is a declarative source of truth. Keep its candidates
+  // separate so the live path can replace every edge authored by the pages
+  // in this run atomically, including stale incoming mappings.
+  const frontmatterBatch: LinkBatchInput[] = [];
   async function flush() {
     if (batch.length === 0) return;
     const snapshot = batch.slice();
@@ -1728,7 +1732,7 @@ async function extractLinksFromDB(
         }
         created++;
       } else {
-        batch.push({
+        const row: LinkBatchInput = {
           from_slug: fromSlug,
           to_slug: c.targetSlug,
           link_type: c.linkType,
@@ -1742,8 +1746,13 @@ async function extractLinksFromDB(
           from_source_id: fromSourceId,
           to_source_id: toSourceId,
           origin_source_id: source_id,
-        });
-        if (batch.length >= BATCH_SIZE) await flush();
+        };
+        if (includeFrontmatter && c.linkSource === 'frontmatter') {
+          frontmatterBatch.push(row);
+        } else {
+          batch.push(row);
+          if (batch.length >= BATCH_SIZE) await flush();
+        }
       }
     }
     processed++;
@@ -1751,6 +1760,24 @@ async function extractLinksFromDB(
     progress.tick(1);
   }
   await flush();
+  let frontmatterRemoved = 0;
+  if (!dryRun && includeFrontmatter) {
+    const frontmatterCreated = await engine.transaction(async (tx) => {
+      frontmatterRemoved = await tx.removeLinksByOriginPagesAndSource(
+        processedRefs,
+        { linkSource: 'frontmatter' },
+      );
+      let inserted = 0;
+      for (let i = 0; i < frontmatterBatch.length; i += BATCH_SIZE) {
+        inserted += await tx.addLinksBatch(
+          frontmatterBatch.slice(i, i + BATCH_SIZE),
+          { auditSite: 'extract.links_db.frontmatter_reconcile' },
+        );
+      }
+      return inserted;
+    });
+    created += frontmatterCreated;
+  }
   // v0.42.7 (#1696): stamp the extraction watermark for every page we
   // processed (incl. zero-link pages — they WERE extracted). Chunked so the
   // unnest UPDATE stays bounded on big brains. Best-effort (stampExtracted
@@ -1767,6 +1794,9 @@ async function extractLinksFromDB(
   if (!jsonMode) {
     const label = dryRun ? '(dry run) would create' : 'created';
     console.log(`Links: ${label} ${created} from ${processed} pages (db source)`);
+    if (!dryRun && includeFrontmatter && frontmatterRemoved > 0) {
+      console.log(`Frontmatter: removed ${frontmatterRemoved} stale/replaced link(s) before reconciliation.`);
+    }
     if (skippedMissingTarget > 0) {
       console.log(`Skipped ${skippedMissingTarget} candidate(s) whose target page doesn't exist (references to non-pages are never persisted).`);
     }
@@ -1996,6 +2026,7 @@ export async function extractStaleFromDB(
     if (rows.length === 0) break;
 
     const linkRows: LinkBatchInput[] = [];
+    const frontmatterRows: LinkBatchInput[] = [];
     const timelineRows: TimelineBatchInput[] = [];
     const processedRefs: Array<{ slug: string; source_id: string; extractedAt: string }> = [];
 
@@ -2012,12 +2043,17 @@ export async function extractStaleFromDB(
           else skippedMissingTarget++;
           continue;
         }
-        linkRows.push({
+        const linkRow: LinkBatchInput = {
           from_slug: r.fromSlug, to_slug: c.targetSlug, link_type: c.linkType,
           context: c.context, link_source: c.linkSource, origin_slug: c.originSlug,
           origin_field: c.originField, from_source_id: r.fromSourceId,
           to_source_id: r.toSourceId, origin_source_id: page.source_id,
-        });
+        };
+        if (includeFrontmatter && c.linkSource === 'frontmatter') {
+          frontmatterRows.push(linkRow);
+        } else {
+          linkRows.push(linkRow);
+        }
       }
       for (const entry of parseTimelineEntries(fullContent)) {
         // #3957: carry the parsed source label — omitting it wrote source=''
@@ -2050,19 +2086,47 @@ export async function extractStaleFromDB(
       processedRefs.push({ slug: page.slug, source_id: page.source_id, extractedAt: stampIso });
     }
 
-    // Flush NON-swallowing (CDX-4): a throw here propagates out of the sweep so
-    // the batch's pages stay unstamped and re-extract next run. addLinksBatch is
-    // ON CONFLICT DO NOTHING + timeline dedups, so partial-chunk writes are
-    // idempotent on re-extraction.
-    for (let i = 0; i < linkRows.length; i += BATCH_SIZE) {
-      linksCreated += await engine.addLinksBatch(linkRows.slice(i, i + BATCH_SIZE), { auditSite: 'extract.stale' }); // gbrain-allow-direct-insert: gbrain extract --stale — canonical link reconciliation from markdown body
-    }
-    for (let i = 0; i < timelineRows.length; i += BATCH_SIZE) {
-      timelineCreated += await engine.addTimelineEntriesBatch(timelineRows.slice(i, i + BATCH_SIZE), { auditSite: 'extract.stale' });
-    }
-    // Stamp LAST, directly (not the swallowing stampExtracted) so a stamp
-    // failure surfaces instead of looping forever.
-    await engine.markPagesExtractedBatch(processedRefs, new Date().toISOString());
+    // Flush NON-swallowing (CDX-4): a throw propagates out of the sweep so the
+    // batch's pages stay unstamped and re-extract next run. Frontmatter is
+    // declarative, so replace every edge authored by this stale batch before
+    // inserting its current set. Keep reconciliation, ordinary links,
+    // timelines, and the final stamp in one transaction: no page can be
+    // stamped fresh with a partially-reconciled graph.
+    const batchCreated = await engine.transaction(async (tx) => {
+      let batchLinksCreated = 0;
+      let batchTimelineCreated = 0;
+
+      if (includeFrontmatter) {
+        await tx.removeLinksByOriginPagesAndSource(
+          processedRefs.map(({ slug, source_id }) => ({ slug, source_id })),
+          { linkSource: 'frontmatter' },
+        );
+        for (let i = 0; i < frontmatterRows.length; i += BATCH_SIZE) {
+          batchLinksCreated += await tx.addLinksBatch(
+            frontmatterRows.slice(i, i + BATCH_SIZE),
+            { auditSite: 'extract.stale' },
+          ); // gbrain-allow-direct-insert: gbrain extract --stale — declarative frontmatter reconciliation
+        }
+      }
+      for (let i = 0; i < linkRows.length; i += BATCH_SIZE) {
+        batchLinksCreated += await tx.addLinksBatch(
+          linkRows.slice(i, i + BATCH_SIZE),
+          { auditSite: 'extract.stale' },
+        ); // gbrain-allow-direct-insert: gbrain extract --stale — canonical link extraction from markdown body
+      }
+      for (let i = 0; i < timelineRows.length; i += BATCH_SIZE) {
+        batchTimelineCreated += await tx.addTimelineEntriesBatch(
+          timelineRows.slice(i, i + BATCH_SIZE),
+          { auditSite: 'extract.stale' },
+        );
+      }
+      // Stamp LAST, directly (not the swallowing stampExtracted) so a stamp
+      // failure surfaces instead of looping forever.
+      await tx.markPagesExtractedBatch(processedRefs, new Date().toISOString());
+      return { links: batchLinksCreated, timeline: batchTimelineCreated };
+    });
+    linksCreated += batchCreated.links;
+    timelineCreated += batchCreated.timeline;
 
     pagesProcessed += rows.length;
     progress.tick(rows.length);

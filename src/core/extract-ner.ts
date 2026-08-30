@@ -17,7 +17,12 @@
 
 import type { BrainEngine } from './engine.ts';
 import type { LinkBatchInput } from './engine.ts';
-import { buildGazetteer, findMentionedEntities, type Gazetteer } from './by-mention.ts';
+import {
+  buildGazetteer,
+  findMentionedEntities,
+  LINKABLE_ENTITY_TYPES,
+  type Gazetteer,
+} from './by-mention.ts';
 import { inferLinkTypeFromPack } from './schema-pack/link-inference.ts';
 import { loadActivePackForLocalEngine, packSupportsNerInference } from './schema-pack/best-effort.ts';
 
@@ -50,6 +55,17 @@ export interface ExtractNerResult {
 
 /** Context window scanned around each mention for verb-pattern matching. */
 const CONTEXT_WINDOW_CHARS = 80;
+
+const ELIGIBLE_NER_SOURCE_TYPES = new Set<string>(LINKABLE_ENTITY_TYPES);
+
+/**
+ * A typed relation is owned by the page being scanned. Only entity pages can
+ * safely act as that subject: prose in a conversation that says “Alice works
+ * at Acme” must not turn into `conversation -> Acme (works_at)`.
+ */
+export function isEligibleNerSourceType(type: string | null | undefined): boolean {
+  return typeof type === 'string' && ELIGIBLE_NER_SOURCE_TYPES.has(type);
+}
 
 /**
  * Pure helper: get the context window around a mention's character offset.
@@ -164,6 +180,7 @@ export async function extractNerLinks(
   for (const { slug, source_id } of allRefs) {
     const page = await engine.getPage(slug, { sourceId: source_id });
     if (!page) continue;
+    if (!isEligibleNerSourceType(page.type)) continue;
     if (opts.typeFilter && page.type !== opts.typeFilter) continue;
     if (sinceMs !== null) {
       const updatedMs = new Date(page.updated_at).getTime();

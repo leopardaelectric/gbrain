@@ -135,6 +135,43 @@ describe('gbrain extract --stale', () => {
     expect(stamp1).not.toBeNull();
   });
 
+  test('--include-frontmatter removes a stale edge when the field is cleared', async () => {
+    await engine.putPage('companies/acme', companyPage('Acme'));
+    await engine.putPage('people/alice', {
+      ...personPage('Alice'),
+      frontmatter: { company: 'companies/acme' },
+    });
+
+    await runExtract(engine, ['--stale', '--include-frontmatter']);
+    const countFrontmatterLinks = async () => {
+      const rows = await engine.executeRaw<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+         FROM links l
+         JOIN pages f ON f.id = l.from_page_id
+         JOIN pages t ON t.id = l.to_page_id
+         WHERE f.slug = 'people/alice'
+           AND t.slug = 'companies/acme'
+           AND l.link_source = 'frontmatter'`,
+      );
+      return Number(rows[0]!.count);
+    };
+    expect(await countFrontmatterLinks()).toBe(1);
+
+    await engine.putPage('people/alice', {
+      ...personPage('Alice'),
+      frontmatter: {},
+    }, { allowEmptyOverwrite: true });
+    await engine.executeRaw(
+      `UPDATE pages
+       SET links_extracted_at = now() - interval '2 hours',
+           updated_at = now() - interval '1 hour'
+       WHERE slug = 'people/alice'`,
+    );
+
+    await runExtract(engine, ['--stale', '--include-frontmatter']);
+    expect(await countFrontmatterLinks()).toBe(0);
+  });
+
   test('--dry-run reports count and writes nothing', async () => {
     await engine.putPage('people/alice', personPage('Alice'));
     await engine.putPage('companies/acme', companyPage('Acme', '[Alice](people/alice) joined [Acme](companies/acme).'));
@@ -245,7 +282,10 @@ describe('gbrain extract --stale', () => {
     // Make the link flush throw mid-sweep. The --stale path flushes
     // NON-swallowing (no try/catch), so the throw must propagate AND no page in
     // the batch may be stamped (stamp runs only AFTER a successful flush).
-    const origBatch = engine.addLinksBatch.bind(engine);
+    // Keep the method unbound: the stale path now calls it on a transaction-
+    // scoped engine. Binding it to the parent engine would bypass the open
+    // transaction and deadlock PGLite's single connection on the clean retry.
+    const origBatch = engine.addLinksBatch;
     let threw = false;
     (engine as unknown as { addLinksBatch: unknown }).addLinksBatch = async () => { throw new Error('__flush_boom__'); };
     try {
@@ -279,16 +319,17 @@ describe('gbrain extract --stale', () => {
     // D4 stamps with the READ updated_at (now-3h), so now-1h > now-3h → acme
     // stays stale (edit preserved). The OLD now()-stamp would set
     // links_extracted_at = now > now-1h → acme marked fresh, edit silently lost.
-    const origStamp = engine.markPagesExtractedBatch.bind(engine);
+    const origStamp = engine.markPagesExtractedBatch;
     let hooked = false;
-    (engine as unknown as { markPagesExtractedBatch: unknown }).markPagesExtractedBatch = async (
+    (engine as unknown as { markPagesExtractedBatch: unknown }).markPagesExtractedBatch = async function (
+      this: PGLiteEngine,
       refs: Array<{ slug: string; source_id: string; extractedAt?: string }>, def: string,
-    ) => {
+    ) {
       if (!hooked) {
         hooked = true;
-        await engine.executeRaw(`UPDATE pages SET updated_at = now() - interval '1 hour' WHERE slug = 'companies/acme'`);
+        await this.executeRaw(`UPDATE pages SET updated_at = now() - interval '1 hour' WHERE slug = 'companies/acme'`);
       }
-      return origStamp(refs, def);
+      return origStamp.call(this, refs, def);
     };
     try {
       await runExtract(engine, ['--stale']);

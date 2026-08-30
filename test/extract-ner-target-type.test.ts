@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { parseSchemaPackManifest } from '../src/core/schema-pack/index.ts';
 import { inferNerLinkType } from '../src/core/extract-ner.ts';
+import * as extractNer from '../src/core/extract-ner.ts';
 
 describe('inferNerLinkType target_type scope', () => {
   const pack = parseSchemaPackManifest({
@@ -25,5 +26,17 @@ describe('inferNerLinkType target_type scope', () => {
     const context = 'Joao trabalha na Vammo';
     expect(inferNerLinkType(pack, 'company', context)).toBe('works_at');
     expect(inferNerLinkType(pack, 'person', context)).toBeNull();
+  });
+
+  test('only entity pages can own an inferred relationship', () => {
+    const isEligibleNerSourceType = (extractNer as Record<string, unknown>).isEligibleNerSourceType;
+    expect(typeof isEligibleNerSourceType).toBe('function');
+    const isEligible = isEligibleNerSourceType as (type: string | undefined) => boolean;
+    for (const type of ['person', 'company', 'organization', 'entity']) {
+      expect(isEligible(type)).toBe(true);
+    }
+    for (const type of ['conversation', 'slack', 'report', 'note', 'project', undefined]) {
+      expect(isEligible(type)).toBe(false);
+    }
   });
 });

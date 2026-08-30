@@ -28,6 +28,22 @@ beforeAll(async () => {
   await eng.connect({});
   await eng.initSchema();
   await seedRelationalCorpus(eng);
+  await eng.putPage('people/typed-ner-operator', {
+    type: 'person',
+    title: 'Typed NER Operator',
+    compiled_truth: 'Operational profile with no lexical company reference.',
+    timeline: '',
+  });
+  await eng.addLinksBatch([{
+    from_slug: 'people/typed-ner-operator',
+    to_slug: 'companies/widget-co',
+    link_type: 'works_at',
+    link_source: 'mentions',
+    link_kind: 'typed_ner',
+    context: 'works at Widget Co',
+    from_source_id: 'default',
+    to_source_id: 'default',
+  }]);
 }, 60_000);
 
 afterAll(async () => { await eng.disconnect(); });
@@ -63,6 +79,15 @@ describe('relational A/B', () => {
     // Hit@3 should also rise sharply.
     expect(onFam.hit_at_3).toBeGreaterThan(offFam.hit_at_3);
   }, 120_000);
+
+  test('typed-NER relation is absent with the arm OFF and recalled with it ON', async () => {
+    const q = 'who works at widget-co';
+    const off = await searchFnWith(false)(q);
+    const on = await searchFnWith(true)(q);
+
+    expect(off).not.toContain('people/typed-ner-operator');
+    expect(on).toContain('people/typed-ner-operator');
+  }, 60_000);
 
   test('no-regression: non-relational query is identical arm-on vs arm-off', async () => {
     const q = 'early-stage venture fund first checks';

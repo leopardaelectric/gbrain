@@ -1029,13 +1029,15 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
 
 // ── relationalFanout parity (v0.43) ─────────────────────────────────────
 async function seedRelational(eng: BrainEngine) {
-  const pages: Array<[string, 'company' | 'person']> = [
+  const pages: Array<[string, string]> = [
     ['companies/ep-widget', 'company'],
     ['companies/ep-other', 'company'],
     ['people/ep-inv-a', 'person'],
     ['people/ep-inv-b', 'person'],
     ['people/ep-emp-c', 'person'],
+    ['people/ep-typed-ner', 'person'],
     ['people/ep-mentioner', 'person'],
+    ['writing/ep-legacy-typed-ner', 'note'],
   ];
   for (const [slug, type] of pages) {
     await eng.putPage(slug, { type, title: slug, compiled_truth: `${slug} body`, timeline: '' });
@@ -1047,6 +1049,25 @@ async function seedRelational(eng: BrainEngine) {
   await eng.addLink('people/ep-inv-a', 'companies/ep-widget', '', 'invested_in', 'manual');
   await eng.addLink('people/ep-inv-b', 'companies/ep-widget', '', 'invested_in', 'manual');
   await eng.addLink('people/ep-emp-c', 'companies/ep-widget', '', 'works_at', 'manual');
+  await eng.addLinksBatch([{
+    from_slug: 'people/ep-typed-ner',
+    to_slug: 'companies/ep-widget',
+    link_type: 'works_at',
+    link_source: 'mentions',
+    link_kind: 'typed_ner',
+    context: 'works at ep-widget',
+    from_source_id: 'default',
+    to_source_id: 'default',
+  }, {
+    from_slug: 'writing/ep-legacy-typed-ner',
+    to_slug: 'companies/ep-widget',
+    link_type: 'works_at',
+    link_source: 'mentions',
+    link_kind: 'typed_ner',
+    context: 'legacy prose-owned relation',
+    from_source_id: 'default',
+    to_source_id: 'default',
+  }]);
   await eng.addLink('people/ep-mentioner', 'companies/ep-widget', '', 'mentions', 'mentions');
   await eng.addLink('people/ep-inv-a', 'companies/ep-other', '', 'invested_in', 'manual');
 }
@@ -1085,11 +1106,13 @@ describeBoth('Engine parity — relationalFanout', () => {
     expect(pg.map(r => r.slug).sort()).toEqual(['people/ep-inv-a', 'people/ep-inv-b']);
   });
 
-  test('type-agnostic + mentions-exclusion identical across engines', async () => {
+  test('typed-NER promotion + plain-mentions exclusion are identical across engines', async () => {
     const pg = await pgEngine.relationalFanout(['companies/ep-widget'], { direction: 'in' });
     const pglite = await pgliteEngine.relationalFanout(['companies/ep-widget'], { direction: 'in' });
     expect(shape(pg)).toEqual(shape(pglite));
     expect(pg.map(r => r.slug)).not.toContain('people/ep-mentioner');
+    expect(pg.map(r => r.slug)).toContain('people/ep-typed-ner');
+    expect(pg.map(r => r.slug)).not.toContain('writing/ep-legacy-typed-ner');
   });
 
   test('connects (multi-seed, both) identical across engines', async () => {
@@ -1506,7 +1529,8 @@ describeBoth('Engine parity — removeLinksByPagesAndSource (#3674)', () => {
   }, 30_000);
 
   async function seed(eng: BrainEngine): Promise<void> {
-    await eng.putPage('rlps/from-a', { type: 'note', title: 'a', compiled_truth: 'body a', timeline: '' });
+    await eng.putPage('rlps/from-a', { type: 'person', title: 'a', compiled_truth: 'body a', timeline: '' });
+    await eng.putPage('rlps/from-note', { type: 'note', title: 'legacy', compiled_truth: 'legacy body', timeline: '' });
     await eng.putPage('rlps/to-x', { type: 'person', title: 'x', compiled_truth: 'body x', timeline: '' });
     await eng.putPage('rlps/to-y', { type: 'person', title: 'y', compiled_truth: 'body y', timeline: '' });
     await eng.addLinksBatch([
@@ -1516,22 +1540,25 @@ describeBoth('Engine parity — removeLinksByPagesAndSource (#3674)', () => {
       // typed_ner verb rows: to-x kept (still derivable), to-y stale
       { from_slug: 'rlps/from-a', to_slug: 'rlps/to-x', link_type: 'works_at', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
       { from_slug: 'rlps/from-a', to_slug: 'rlps/to-y', link_type: 'works_at', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
+      // Legacy typed row from prose: deleted even when the pair is offered as
+      // keepable, because only entity pages can own typed relationships.
+      { from_slug: 'rlps/from-note', to_slug: 'rlps/to-x', link_type: 'works_at', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
       // a markdown row that must survive
       { from_slug: 'rlps/from-a', to_slug: 'rlps/to-x', link_type: 'references', link_source: 'markdown', context: '', from_source_id: 'default', to_source_id: 'default' },
     ]);
   }
 
   async function survivors(eng: BrainEngine): Promise<string[]> {
-    const rows = await eng.executeRaw<{ to_slug: string; link_source: string | null; link_kind: string | null }>(
-      `SELECT tp.slug AS to_slug, l.link_source, l.link_kind
+    const rows = await eng.executeRaw<{ from_slug: string; to_slug: string; link_source: string | null; link_kind: string | null }>(
+      `SELECT fp.slug AS from_slug, tp.slug AS to_slug, l.link_source, l.link_kind
        FROM links l
        JOIN pages fp ON fp.id = l.from_page_id
        JOIN pages tp ON tp.id = l.to_page_id
-       WHERE fp.slug = 'rlps/from-a'
-       ORDER BY tp.slug, l.link_source, l.link_kind NULLS FIRST`,
+       WHERE fp.slug IN ('rlps/from-a', 'rlps/from-note')
+       ORDER BY fp.slug, tp.slug, l.link_source, l.link_kind NULLS FIRST`,
       [],
     );
-    return rows.map((r) => `${r.to_slug}|${r.link_source}|${r.link_kind ?? ''}`);
+    return rows.map((r) => `${r.from_slug}|${r.to_slug}|${r.link_source}|${r.link_kind ?? ''}`);
   }
 
   test('identical removal counts and survivors on both engines', async () => {
@@ -1539,23 +1566,28 @@ describeBoth('Engine parity — removeLinksByPagesAndSource (#3674)', () => {
     for (const eng of [pgEngine, pgliteEngine]) {
       await seed(eng);
       const removed = await eng.removeLinksByPagesAndSource(
-        [{ slug: 'rlps/from-a', source_id: 'default' }],
+        [
+          { slug: 'rlps/from-a', source_id: 'default' },
+          { slug: 'rlps/from-note', source_id: 'default' },
+        ],
         {
           linkSource: 'mentions',
           keepTypedNerPairs: [
             { from_slug: 'rlps/from-a', from_source_id: 'default', to_slug: 'rlps/to-x', to_source_id: 'default' },
+            { from_slug: 'rlps/from-note', from_source_id: 'default', to_slug: 'rlps/to-x', to_source_id: 'default' },
           ],
         },
       );
       results.push({ removed, left: await survivors(eng) });
     }
-    // 2 plain mentions + 1 stale typed_ner deleted; kept typed_ner + markdown survive.
-    expect(results[0]!.removed).toBe(3);
-    expect(results[1]!.removed).toBe(3);
+    // 2 plain mentions + 1 stale entity-owned typed_ner + 1 legacy prose-
+    // owned typed_ner deleted; the valid kept typed_ner + markdown survive.
+    expect(results[0]!.removed).toBe(4);
+    expect(results[1]!.removed).toBe(4);
     expect(results[0]!.left).toEqual(results[1]!.left);
     expect(results[0]!.left).toEqual([
-      'rlps/to-x|markdown|',
-      'rlps/to-x|mentions|typed_ner',
+      'rlps/from-a|rlps/to-x|markdown|',
+      'rlps/from-a|rlps/to-x|mentions|typed_ner',
     ]);
   });
 });

@@ -1344,9 +1344,9 @@ export interface BrainEngine {
    *     link_source = `opts.linkSource`.
    *   - `opts.keepTypedNerPairs` protects extract-ner's verb-typed rows the
    *     mention scan cannot regenerate: a row with link_kind = 'typed_ner'
-   *     whose (from, to) pair appears in the keep list SURVIVES. typed_ner
-   *     rows NOT in the list (target no longer derivable) are deleted with
-   *     everything else.
+   *     whose owner is an entity page and whose (from, to) pair appears in
+   *     the keep list SURVIVES. Legacy prose-owned typed_ner rows and rows
+   *     NOT in the list are deleted with everything else.
    *
    * Returns the number of rows deleted. Atomic per call (one statement).
    * Both engines implement the identical SQL shape (parity-pinned).
@@ -1360,6 +1360,15 @@ export interface BrainEngine {
         to_slug: string; to_source_id: string;
       }>;
     },
+  ): Promise<number>;
+  /**
+   * Remove links authored by the specified origin pages for one provenance.
+   * Unlike removeLinksByPagesAndSource, this scopes through origin_page_id,
+   * so it reconciles both outgoing and incoming frontmatter mappings.
+   */
+  removeLinksByOriginPagesAndSource(
+    pages: Array<{ slug: string; source_id: string }>,
+    opts: { linkSource: string },
   ): Promise<number>;
   /**
    * v0.31.8 (D12 + D16): `opts.sourceId` source-scopes the from-page lookup.
@@ -1461,8 +1470,10 @@ export interface BrainEngine {
    *   stays in its seed's own source), even when multiple sources are in
    *   scope. Cross-source edge traversal is a separate, security-reviewed
    *   feature.
-   * - `link_source='mentions'` edges are EXCLUDED by default (noisy + the
-   *   densest fan-out source); opt in via `includeMentions`.
+   * - Plain `link_source='mentions'` edges are EXCLUDED by default (noisy +
+   *   the densest fan-out source). Deterministic verb-pattern relations with
+   *   `link_kind='typed_ner'` stay eligible; opt in to plain mentions via
+   *   `includeMentions`.
    * - `deleted_at IS NULL` at seed, every neighbor, and every returned node.
    * - Deterministic ordering: hop ASC, edge_count DESC, source_id, slug.
    * Must move in lockstep with the PGLite implementation

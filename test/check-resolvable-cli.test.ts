@@ -6,6 +6,7 @@ import { join, resolve } from 'path';
 import {
   parseFlags,
   resolveSkillsDir,
+  runCheckResolvable,
   DEFERRED,
 } from '../src/commands/check-resolvable.ts';
 
@@ -150,17 +151,17 @@ describe('check-resolvable — unit: resolveSkillsDir', () => {
     // in test/repo-root.test.ts that drive autoDetectSkillsDirReadOnly
     // with mocked env to suppress the install-path success.
     const empty = mkdtempSync(join(tmpdir(), 'empty-for-resolve-'));
-    const original = process.cwd();
     try {
-      process.chdir(empty);
-      const r = resolveSkillsDir({ help: false, json: false, fix: false, dryRun: false, verbose: false, strict: false, skillsDir: null });
+      const r = resolveSkillsDir(
+        { help: false, json: false, fix: false, dryRun: false, verbose: false, strict: false, skillsDir: null },
+        { startDir: empty, env: {} },
+      );
       // Install-path fallback succeeds when test runs inside the gbrain repo.
       expect(r.error).toBeNull();
       // r.dir is join()/resolve()-built, so the separator is '\' on win32.
       expect(r.dir).toMatch(/[\\/]skills$/);
       expect(r.source).toBe('install_path');
     } finally {
-      process.chdir(original);
       rmSync(empty, { recursive: true, force: true });
     }
   });
@@ -384,21 +385,35 @@ describe('gbrain check-resolvable CLI — integration', () => {
   // Without this gate, `cd ~ && gbrain check-resolvable --fix` would silently
   // mutate SKILL.md files in the bundled gbrain repo via autoFixDryViolations.
   // Codex caught this leak in the v0.31.7 ship review.
-  it('v0.31.7 D6: --fix refuses when source is install_path', () => {
-    // Run from a guaranteed-empty tempdir so the install-path fallback fires.
+  it('v0.31.7 D6: --fix refuses when source is install_path', async () => {
+    // Inject an empty detection environment so this remains hermetic on hosts
+    // that have a real ~/.openclaw/workspace.
     const empty = mkdtempSync(join(tmpdir(), 'cr-fix-installpath-'));
+    const originalExit = process.exit;
+    const originalWrite = process.stderr.write;
+    let exitCode = -1;
+    let stderr = '';
     try {
-      // Pass --fix; expect refusal exit + clear error message.
-      const r = spawnSync('bun', ['run', CLI, 'check-resolvable', '--fix'], {
-        cwd: empty,
-        env: { ...process.env, OPENCLAW_WORKSPACE: '', GBRAIN_SKILLS_DIR: '' },
-        encoding: 'utf-8',
-      });
-      expect(r.status).toBe(1);
-      expect(r.stderr).toContain('install-path fallback');
-      expect(r.stderr).toContain('refused');
-      expect(r.stderr).toMatch(/GBRAIN_SKILLS_DIR|OPENCLAW_WORKSPACE|--skills-dir/);
+      process.exit = ((code?: number) => {
+        exitCode = code ?? 0;
+        throw new Error('__test_exit__');
+      }) as typeof process.exit;
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        stderr += String(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+      try {
+        await runCheckResolvable(['--fix'], { startDir: empty, env: {} });
+      } catch (error) {
+        if (!(error instanceof Error && error.message === '__test_exit__')) throw error;
+      }
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain('install-path fallback');
+      expect(stderr).toContain('refused');
+      expect(stderr).toMatch(/GBRAIN_SKILLS_DIR|OPENCLAW_WORKSPACE|--skills-dir/);
     } finally {
+      process.exit = originalExit;
+      process.stderr.write = originalWrite;
       rmSync(empty, { recursive: true, force: true });
     }
   });

@@ -44,6 +44,14 @@ Three regexes, zero LLM tokens, single SQL `addLinksBatch` call with `INSERT ...
 
 Heuristic link-type inference (`attended`, `works_at`, `invested_in`, `founded`, `advises`) fires from surrounding sentence context — also LLM-free. Power users who want richer types add them via the typed-link blockquote convention.
 
+Relational recall excludes plain body-mention edges by default because their
+fan-out is noisy. Deterministic verb-pattern edges keep their mention
+provenance as `link_source='mentions'`, but carry `link_kind='typed_ner'` and
+remain eligible for the default typed-edge walk only when the relation owner is
+an entity page (`person`, `company`, `organization`, or `entity`). This owner
+gate keeps legacy prose-owned rows out of relational recall. The explicit
+`includeMentions` option adds plain mentions when a caller needs them.
+
 ## Cross-encoder reranker: 60% top-1 reshuffle
 
 The reranker is on for the `balanced` and `tokenmax` mode bundles, off for `conservative`. New installs with a Voyage key get `rerank-2.5` written as explicit `search.reranker.model` config (the recommended reranker; same `VOYAGE_API_KEY` as embeddings — keyed installs without one get reranking explicitly disabled instead); brains that never set the key still fall back to the legacy ZeroEntropy `zerank-2` mode-bundle default, which is deprecated (the hosted API ends 2026-09-04 — switch with `gbrain config set search.reranker.model voyage:rerank-2.5`) and remains the fallback only until the September cutover. On a real-corpus benchmark across 20 queries, zerank-2 reshuffles **60% of top-1 results** after the hybrid + RRF + graph stack. That's the headline number.

@@ -129,7 +129,10 @@ export function parseFlags(argv: string[]): Flags {
 // Skills-dir resolution
 // ---------------------------------------------------------------------------
 
-export function resolveSkillsDir(flags: Flags): {
+export function resolveSkillsDir(
+  flags: Flags,
+  detection?: { startDir?: string; env?: NodeJS.ProcessEnv },
+): {
   dir: string | null;
   error: Envelope['error'];
   message: string | null;
@@ -142,7 +145,10 @@ export function resolveSkillsDir(flags: Flags): {
     return { dir, error: null, message: null, source: 'explicit' };
   }
 
-  const detected = autoDetectSkillsDirReadOnly();
+  const detected = autoDetectSkillsDirReadOnly(
+    detection?.startDir ?? process.cwd(),
+    detection?.env ?? process.env,
+  );
   if (!detected.dir) {
     return {
       dir: null,
@@ -248,7 +254,10 @@ function printAutoFixHuman(autoFix: AutoFixReport, dryRun: boolean): void {
 // Entry point
 // ---------------------------------------------------------------------------
 
-export async function runCheckResolvable(args: string[]): Promise<void> {
+export async function runCheckResolvable(
+  args: string[],
+  detection?: { startDir?: string; env?: NodeJS.ProcessEnv },
+): Promise<void> {
   const flags = parseFlags(args);
 
   if (flags.help) {
@@ -256,7 +265,7 @@ export async function runCheckResolvable(args: string[]): Promise<void> {
     process.exit(0);
   }
 
-  const { dir, error, message, source } = resolveSkillsDir(flags);
+  const { dir, error, message, source } = resolveSkillsDir(flags, detection);
 
   if (error === 'no_skills_dir') {
     const env: Envelope = {

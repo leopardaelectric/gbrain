@@ -26,6 +26,7 @@ import {
   findMisroutedPages,
   resolveDriftWalkBounds,
 } from '../src/core/multi-source-drift.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let engine: PGLiteEngine;
 const TMP_ROOTS: string[] = [];
@@ -162,21 +163,15 @@ describe('findMisroutedPages — heuristic correctness', () => {
       seedFile(root, `topics/file-${i}.md`);
     }
 
-    const previousLimit = process.env.GBRAIN_DRIFT_LIMIT;
-    const previousTimeout = process.env.GBRAIN_DRIFT_TIMEOUT_MS;
-    process.env.GBRAIN_DRIFT_LIMIT = '5';
-    process.env.GBRAIN_DRIFT_TIMEOUT_MS = '5000';
-    try {
+    await withEnv({
+      GBRAIN_DRIFT_LIMIT: '5',
+      GBRAIN_DRIFT_TIMEOUT_MS: '5000',
+    }, async () => {
       const result = await findMisroutedPages(engine, [
         { id: 'src-case5b-fake', local_path: root },
       ]);
       expect(result.walk_truncated).toBe(true);
-    } finally {
-      if (previousLimit === undefined) delete process.env.GBRAIN_DRIFT_LIMIT;
-      else process.env.GBRAIN_DRIFT_LIMIT = previousLimit;
-      if (previousTimeout === undefined) delete process.env.GBRAIN_DRIFT_TIMEOUT_MS;
-      else process.env.GBRAIN_DRIFT_TIMEOUT_MS = previousTimeout;
-    }
+    });
   });
 
   test('case 6 (OV13): unreadable local_path does NOT crash; returns empty', async () => {

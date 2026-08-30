@@ -139,7 +139,7 @@ describe('extract links --by-mention --rebuild (#3674)', () => {
     expect(await mentionTargets('writing/post-2')).toEqual([]);
   });
 
-  test('still-valid typed_ner rows survive; stale typed_ner rows die', async () => {
+  test('legacy typed_ner rows owned by non-entity pages are removed', async () => {
     await seedEntities();
     await seedContentPage('writing/post-3', 'Acme Corp and Alice Example.');
     await runCli(['links', '--by-mention', '--source', 'db']);
@@ -149,16 +149,40 @@ describe('extract links --by-mention --rebuild (#3674)', () => {
       { from_slug: 'writing/post-3', to_slug: 'companies/acme', link_type: 'invested_in', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
     ]);
 
-    // Body rewritten: Alice still mentioned, Acme gone.
+    // Body rewritten: Alice is still mentioned. The legacy typed row must not
+    // survive because a writing page cannot own an entity relationship.
     await seedContentPage('writing/post-3', 'Alice Example runs the show now.');
     await runCli(['links', '--by-mention', '--rebuild', '--source', 'db']);
 
     const rows = await mentionTargets('writing/post-3');
-    // Alice: plain mention re-inserted + typed_ner verb row preserved.
-    expect(rows.filter((r) => r.to === 'people/alice' && r.kind === 'typed_ner').length).toBe(1);
+    // Alice: only the plain mention is re-inserted.
+    expect(rows.filter((r) => r.to === 'people/alice' && r.kind === 'typed_ner')).toEqual([]);
     expect(rows.filter((r) => r.to === 'people/alice' && r.kind !== 'typed_ner').length).toBe(1);
     // Acme: both the plain row AND the stale typed_ner row are gone.
     expect(rows.filter((r) => r.to === 'companies/acme')).toEqual([]);
+  });
+
+  test('valid entity-owned typed_ner rows survive only while their target remains mentioned', async () => {
+    await seedEntities();
+    await engine.putPage('companies/beta', { type: 'company', title: 'Beta LLC', compiled_truth: 'beta body', timeline: '', frontmatter: {} });
+    await engine.putPage('people/alice', {
+      type: 'person', title: 'Alice Example', compiled_truth: 'Acme Corp and Beta LLC.', timeline: '', frontmatter: {},
+    }, { allowEmptyOverwrite: true });
+    await runCli(['links', '--by-mention', '--source', 'db']);
+    await engine.addLinksBatch([
+      { from_slug: 'people/alice', to_slug: 'companies/acme', link_type: 'works_at', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
+      { from_slug: 'people/alice', to_slug: 'companies/beta', link_type: 'works_at', link_source: 'mentions', link_kind: 'typed_ner', context: '', from_source_id: 'default', to_source_id: 'default' },
+    ]);
+
+    await engine.putPage('people/alice', {
+      type: 'person', title: 'Alice Example', compiled_truth: 'Acme Corp remains.', timeline: '', frontmatter: {},
+    }, { allowEmptyOverwrite: true });
+    await runCli(['links', '--by-mention', '--rebuild', '--source', 'db']);
+
+    const rows = await mentionTargets('people/alice');
+    expect(rows.filter((r) => r.to === 'companies/acme' && r.kind === 'typed_ner').length).toBe(1);
+    expect(rows.filter((r) => r.to === 'companies/acme' && r.kind !== 'typed_ner').length).toBe(1);
+    expect(rows.filter((r) => r.to === 'companies/beta')).toEqual([]);
   });
 
   test('other link_sources are untouched by the rebuild sweep', async () => {

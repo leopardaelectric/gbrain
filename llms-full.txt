@@ -427,7 +427,8 @@ balanced/tokenmax) adds a fourth recall arm: a relational query ("who invested
 in X", "what connects A and B") resolves its seed entity and walks the typed-edge
 graph (`src/core/search/relational-recall.ts` + `relational-intent.ts`,
 `engine.relationalFanout`), injecting edge-derived answers into RRF. Within-source,
-deterministic, mentions-excluded by default, pure no-op for non-relational queries.
+deterministic, plain mentions excluded by default, deterministic `typed_ner`
+relations included only when owned by entity pages, and pure no-op for non-relational queries.
 The `query` op's `relational` flag forces it on/off per call.
 
 **Three CLI surfaces:**

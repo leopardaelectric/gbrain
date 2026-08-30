@@ -3,7 +3,8 @@
  *
  * Exercises the typed-edge fan-out SQL directly so the engine method is
  * covered even when the DATABASE_URL-gated parity test does not run. Pins:
- * typed-edge filtering, mentions-excluded-by-default, deleted_at exclusion,
+ * typed-edge filtering, plain-mentions-excluded-by-default, typed-NER
+ * promotion, deleted_at exclusion,
  * hop/edge_count aggregation, canonical_chunk_id, multi-seed + connects,
  * and determinism.
  */
@@ -34,11 +35,13 @@ beforeAll(async () => {
     ['people/investor-a', 'person', 'Investor A'],
     ['people/investor-b', 'person', 'Investor B'],
     ['people/employee-c', 'person', 'Employee C'],
+    ['people/typed-ner-worker', 'person', 'Typed NER Worker'],
     ['people/mentioner', 'person', 'Mentioner'],
+    ['writing/legacy-typed-ner', 'note', 'Legacy Typed NER'],
     ['people/deleted-investor', 'person', 'Deleted Investor'],
   ];
   for (const [slug, type, title] of pages) {
-    await eng.putPage(slug, { type: type as 'company' | 'person', title, compiled_truth: `${title} body`, timeline: '' });
+    await eng.putPage(slug, { type, title, compiled_truth: `${title} body`, timeline: '' });
   }
   // investor-b carries a chunk (→ canonical_chunk_id non-null); investor-a stays chunkless.
   const chunk: ChunkInput[] = [{ chunk_index: 0, chunk_text: 'b', chunk_source: 'compiled_truth', embedding: emb(2, DIM), token_count: 1 }];
@@ -48,6 +51,25 @@ beforeAll(async () => {
   await eng.addLink('people/investor-a', 'companies/widget-co', '', 'invested_in', 'manual');
   await eng.addLink('people/investor-b', 'companies/widget-co', '', 'invested_in', 'manual');
   await eng.addLink('people/employee-c', 'companies/widget-co', '', 'works_at', 'manual');
+  await eng.addLinksBatch([{
+    from_slug: 'people/typed-ner-worker',
+    to_slug: 'companies/widget-co',
+    link_type: 'works_at',
+    link_source: 'mentions',
+    link_kind: 'typed_ner',
+    context: 'works at Widget Co',
+    from_source_id: 'default',
+    to_source_id: 'default',
+  }, {
+    from_slug: 'writing/legacy-typed-ner',
+    to_slug: 'companies/widget-co',
+    link_type: 'works_at',
+    link_source: 'mentions',
+    link_kind: 'typed_ner',
+    context: 'Alice works at Widget Co',
+    from_source_id: 'default',
+    to_source_id: 'default',
+  }]);
   await eng.addLink('people/mentioner', 'companies/widget-co', '', 'mentions', 'mentions');
   await eng.addLink('people/deleted-investor', 'companies/widget-co', '', 'invested_in', 'manual');
   // investor-a also invested in other-co → widget-co and other-co connect via investor-a.
@@ -77,14 +99,23 @@ describe('relationalFanout', () => {
     expect(rows.map(r => r.slug)).not.toContain('people/deleted-investor');
   });
 
-  test('mentions excluded by default, included on opt-in', async () => {
+  test('typed NER is promoted while plain mentions require opt-in', async () => {
     const off = await eng.relationalFanout(['companies/widget-co'], { direction: 'in' });
     expect(off.map(r => r.slug)).not.toContain('people/mentioner');
+    expect(off.map(r => r.slug)).not.toContain('writing/legacy-typed-ner');
+    expect(off.map(r => r.slug)).toContain('people/typed-ner-worker');
     // type-agnostic also picks up the works_at neighbor
-    expect(off.map(r => r.slug).sort()).toEqual(['people/employee-c', 'people/investor-a', 'people/investor-b']);
+    expect(off.map(r => r.slug).sort()).toEqual([
+      'people/employee-c',
+      'people/investor-a',
+      'people/investor-b',
+      'people/typed-ner-worker',
+    ]);
 
     const on = await eng.relationalFanout(['companies/widget-co'], { direction: 'in', includeMentions: true });
     expect(on.map(r => r.slug)).toContain('people/mentioner');
+    expect(on.map(r => r.slug)).toContain('people/typed-ner-worker');
+    expect(on.map(r => r.slug)).toContain('writing/legacy-typed-ner');
   });
 
   test('canonical_chunk_id: non-null for chunked page, null for chunkless', async () => {

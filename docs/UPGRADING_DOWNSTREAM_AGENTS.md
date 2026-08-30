@@ -275,7 +275,9 @@ If `unresolved.length > 0`:
 - Option 2 (defer): log the unresolved names to the enrichment queue for later.
 - Option 3 (accept the gap): the attendee edge will not be created until a page exists.
   Re-running `gbrain extract links --source db --include-frontmatter` after creating
-  the page fills in the missing edges.
+  the page fills in the missing edges. The same command now reconciles the
+  frontmatter edges authored by every page in its scope: removed or changed
+  fields delete stale edges, while manual and other-provenance links survive.
 ```
 
 ### 2. enrich/SKILL.md (optional)
@@ -617,4 +619,3 @@ job + `inherit:` for `localOnly` admin ops (`sync`, `embed`, `dream`,
 | `shell: inherit entries must be non-empty strings` | Element was empty, non-string, or null. | Use snake_case config-key names. |
 | `shell: inherit name "<X>" must match [a-z][a-z0-9_]*` | Name failed snake_case regex (uppercase, leading underscore, etc.). | Use the config-key verbatim — `database_url`, not `DATABASE_URL`. |
 | `shell: inherit requested "<X>" but worker has no <X> configured` | Worker can't resolve the name from its `loadConfig()`. | Run `gbrain config set <X> <value>` on the worker host. |
-
