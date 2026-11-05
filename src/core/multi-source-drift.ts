@@ -22,7 +22,7 @@
  *    which treats both as markdown).
  *  - Batched single-query DB lookup (D17): collect all candidate slugs from
  *    the FS walk into one array, then run ONE SELECT against pages with a
- *    VALUES clause. NOT a per-file loop (which would be 20K round trips on
+ *    bound text array. NOT a per-file loop (which would be 20K round trips on
  *    a 10K-file source).
  *  - Time + size bounds: cap the walk at 10K files OR 5s. Bail with a "check
  *    skipped, walk too large" status instead of letting doctor hang.
@@ -153,8 +153,9 @@ function walkMarkdownAndMdxFiles(
  * For a list of slugs, query DB for existence at (default, slug) AND at
  * (sourceId, slug) in ONE batched query. Returns a Map<slug, Set<source_id>>.
  *
- * Engine-agnostic: uses executeRaw with a VALUES clause. PGLite + Postgres
- * both support the shape.
+ * Engine-agnostic: uses executeRaw with a bound text array. PGLite + Postgres
+ * both support the shape. The parameter count stays at two even when an
+ * operator raises the walk limit above Postgres's 65,535-parameter ceiling.
  */
 async function batchProbeExistence(
   engine: BrainEngine,
@@ -162,21 +163,18 @@ async function batchProbeExistence(
   sourceId: string,
 ): Promise<Map<string, Set<string>>> {
   if (slugs.length === 0) return new Map();
-  // Build a positional VALUES clause: ($1::text), ($2), ($3), ...
-  const valuePlaceholders = slugs.map((_, i) => `($${i + 1}::text)`).join(', ');
-  const sourceParamIdx = slugs.length + 1;
   const sql = `
-    WITH candidates(slug) AS (VALUES ${valuePlaceholders})
+    WITH candidates(slug) AS (SELECT unnest($1::text[]))
     SELECT c.slug, p.source_id
     FROM candidates c
     LEFT JOIN pages p
       ON p.slug = c.slug AND p.deleted_at IS NULL
-         AND p.source_id IN ('default', $${sourceParamIdx}::text)
+         AND p.source_id IN ('default', $2::text)
     ORDER BY c.slug, p.source_id
   `;
   const rows = await engine.executeRaw<{ slug: string; source_id: string | null }>(
     sql,
-    [...slugs, sourceId],
+    [slugs, sourceId],
   );
   const map = new Map<string, Set<string>>();
   for (const r of rows) {

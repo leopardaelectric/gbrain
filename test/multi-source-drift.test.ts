@@ -27,6 +27,7 @@ import {
   resolveDriftWalkBounds,
 } from '../src/core/multi-source-drift.ts';
 import { withEnv } from './helpers/with-env.ts';
+import { checkDriftSourceIsolation, checkLargeDriftProbe } from './helpers/multi-source-drift-cases.ts';
 
 let engine: PGLiteEngine;
 const TMP_ROOTS: string[] = [];
@@ -58,6 +59,14 @@ function seedFile(root: string, relPath: string, content = 'placeholder\n'): voi
 }
 
 describe('findMisroutedPages — heuristic correctness', () => {
+  test('array probe isolates sources and excludes soft-deleted pages', async () => {
+    await checkDriftSourceIsolation(engine);
+  });
+
+  test('more than 65,535 files use two parameters and one real query', async () => {
+    await checkLargeDriftProbe(engine);
+  }, 120_000);
+
   test('doctor walk bounds honor the documented environment overrides', () => {
     expect(resolveDriftWalkBounds({
       GBRAIN_DRIFT_LIMIT: '75000',
