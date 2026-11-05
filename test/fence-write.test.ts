@@ -19,6 +19,9 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import matter from 'gray-matter';
+import { parseMarkdown } from '../src/core/markdown.ts';
+import { importFromFile } from '../src/core/import-file.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { writeFactsToFence, lookupSourceLocalPath } from '../src/core/facts/fence-write.ts';
 import type { FenceInputFact } from '../src/core/facts/fence-write.ts';
@@ -100,6 +103,22 @@ function installFakeDurabilityHook(repoPath: string): void {
 }
 
 describe('writeFactsToFence — happy path', () => {
+  test('numeric and YAML-keyword stub titles remain strings through import', async () => {
+    for (const [tail, title] of [['2468', '2468'], ['null', 'Null'], ['true', 'True'], ['2026-01-02', '2026 01 02']]) {
+      const slug = `topics/${tail}`;
+      const result = await writeFactsToFence(engine,
+        { sourceId: 'default', localPath: brainDir, slug }, [baseInput()]);
+      expect(result.inserted).toBe(1);
+      const path = join(brainDir, `${slug}.md`);
+      const body = readFileSync(path, 'utf-8');
+      // Inspect raw YAML, not parseMarkdown's defensive string coercion.
+      expect(matter(body).data.title).toBe(title);
+      expect(parseMarkdown(body).title).toBe(title);
+      await importFromFile(engine, path, `${slug}.md`, { sourceId: 'default', noEmbed: true });
+      expect((await engine.getPage(slug, { sourceId: 'default' }))?.title).toBe(title);
+    }
+  });
+
   test('stub-creates entity page when none exists, writes fence, stamps DB', async () => {
     const result = await writeFactsToFence(
       engine,

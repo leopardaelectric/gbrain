@@ -276,7 +276,7 @@ export interface ExtractConversationFactsCoreOpts {
    * Takes precedence over `slug`.
    */
   slugs?: string[];
-  /** Show would-do counts without writing facts or advancing checkpoint. */
+  /** Preview deterministic segmentation only. No AI calls or DB writes. */
   dryRun?: boolean;
   /** Cap pages processed in this invocation (enumeration path only; ignored when `slugs` is set). */
   limit?: number;
@@ -499,7 +499,9 @@ export function renderSegmentForExtraction(
   // Truncate from the end of the body, keeping the header intact so the
   // extractor still sees the topical anchor.
   const slack = SEGMENT_TEXT_CHAR_LIMIT - header.length - 16;
-  return `${header}\n${body.slice(0, Math.max(0, slack))}\n…(truncated)`;
+  // Keep a whole Unicode scalar when the UTF-16 limit cuts a surrogate pair.
+  const prefix = body.slice(0, Math.max(0, slack)).replace(/[\uD800-\uDBFF]$/, '');
+  return `${header}\n${prefix}\n…(truncated)`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1060,14 @@ async function processPage(
     if (state.segmentLimit > 0 && segmentsThisPage >= state.segmentLimit) break;
     if (state.signal?.aborted) throw new Error('aborted');
 
+    // A preview measures deterministic work, never model output. Keep this
+    // before BOTH the injected extractor and the paid extraction path.
+    if (state.dryRun) {
+      state.result.segments_processed++;
+      segmentsThisPage++;
+      continue;
+    }
+
     const text = renderSegmentForExtraction(page.title || page.slug, seg);
     const sessionId = `${PER_SEGMENT_SOURCE_PREFIX}:${page.slug}`;
 
@@ -1354,6 +1364,13 @@ export async function runExtractConversationFactsCore(
      * up; the pool's onError='continue' captures it into failures[].
      */
     const processPageWithLock = async (page: Page): Promise<void> => {
+      // Preview does not need a writer lock: acquiring one writes lock rows.
+      // Concurrent edits may change the preview, but it certifies no outcome.
+      if (dryRun) {
+        const snapshot = await preparePageSnapshot(engine, page);
+        await processPage(state, snapshot, opts.sinceIso);
+        return;
+      }
       const lockId = extractConversationFactsLockId(sourceId, page.slug);
       if (opts.force) {
         state.cpMap.delete(cpMapKey(sourceId, page.slug));
@@ -1801,7 +1818,7 @@ Options:
                          Default: reads cycle.conversation_facts_backfill.types config
                          (falls back to the full allowlist).
   --slug <slug>          Process a single page (overrides multi-page enumeration).
-  --dry-run              Show segmentation + counts; no DB writes, no checkpoint advance.
+  --dry-run              Preview segmentation only; no AI calls or DB writes.
   --limit <N>            Cap pages processed (default: all).
   --since <iso>          Only consider messages newer than this ISO timestamp.
   --force                Re-process the target page (clears its resume entry).
@@ -1983,7 +2000,8 @@ export async function runExtractConversationFacts(
     progress.finish();
   }
 
-  const verb = parsed.dryRun ? '(dry run) would extract' : 'extracted';
+  const verb = parsed.dryRun ? '(dry run) extracted' : 'extracted';
+  if (parsed.dryRun) console.log('Segmentation preview only. Fact counts are not estimated; no AI calls.');
   console.log(
     `\nDone: ${verb} ${aggregate.facts_extracted} facts ` +
     `(${aggregate.facts_inserted} inserted) across ${aggregate.segments_processed} segments ` +

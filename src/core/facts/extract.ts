@@ -286,7 +286,9 @@ export async function extractFactsFromTurnWithOutcome(
   if (!input.turnText) return { ok: true, facts: [] };
 
   // Anti-loop + sanitization.
-  let cleaned = input.turnText.slice(0, MAX_TURN_TEXT_CHARS);
+  // JSON.stringify escapes lone surrogates, but scalar-only API decoders reject them.
+  // Do not split an astral character at the UTF-16 input limit.
+  let cleaned = input.turnText.slice(0, MAX_TURN_TEXT_CHARS).replace(/[\uD800-\uDBFF]$/, '');
   for (const p of INJECTION_PATTERNS) cleaned = cleaned.replace(p.rx, p.replacement);
   cleaned = cleaned.trim();
   if (!cleaned) return { ok: true, facts: [] };
@@ -313,10 +315,17 @@ export async function extractFactsFromTurnWithOutcome(
       : ''
   }`;
   let result: ChatResult;
-  // The cap the last call was actually sent at. When the truncation retry
-  // escalates to maxTokens*2, the malformed-output retry below must re-send
-  // at the escalated cap — re-sending at 1x would just re-truncate.
+  // One output-repair retry in total, regardless of failure class.
   let effectiveMaxTokens = maxTokens;
+  let outputRetried = false;
+  const beforeRetry = async () => {
+    // Do not stack truncation and malformed-output retries. Every chat call
+    // still passes through the gateway budget reservation. Provider errors
+    // (especially ambiguous timeouts) are NEVER automatically replayed here.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    input.abortSignal?.throwIfAborted();
+    outputRetried = true;
+  };
   try {
     result = await chat({
       model,
@@ -324,6 +333,7 @@ export async function extractFactsFromTurnWithOutcome(
       messages: [{ role: 'user', content: userContent }],
       maxTokens,
       abortSignal: input.abortSignal,
+      maxRetries: 0,
     });
     // #2113: never checked pre-fix — a truncated response (stopReason
     // 'length', e.g. reasoning tokens eating the cap on mandatory-reasoning
@@ -334,6 +344,7 @@ export async function extractFactsFromTurnWithOutcome(
         `[facts-extract] WARN: extractor output truncated at maxTokens=${maxTokens} ` +
         `(model=${model}); retrying once at ${maxTokens * 2}\n`,
       );
+      await beforeRetry();
       effectiveMaxTokens = maxTokens * 2;
       result = await chat({
         model,
@@ -341,6 +352,7 @@ export async function extractFactsFromTurnWithOutcome(
         messages: [{ role: 'user', content: userContent }],
         maxTokens: effectiveMaxTokens,
         abortSignal: input.abortSignal,
+        maxRetries: 0,
       });
       if (result.stopReason === 'length') {
         process.stderr.write(
@@ -369,11 +381,13 @@ export async function extractFactsFromTurnWithOutcome(
   let parsedShape = parseExtractorJsonDetailed(result.text);
   if (!parsedShape ||
       (parsedShape.invalidCandidates > 0 && parsedShape.facts.length === 0)) {
+    if (outputRetried) return { ok: false, reason: 'malformed_output', model };
     process.stderr.write(
       `[facts-extract] WARN: extractor returned malformed output (model=${model}); ` +
       'retrying once with an explicit JSON-only reminder\n',
     );
     try {
+      await beforeRetry();
       result = await chat({
         model,
         system: `${EXTRACTOR_SYSTEM}\nThe previous attempt returned invalid JSON or an invalid facts schema. ` +
@@ -381,6 +395,7 @@ export async function extractFactsFromTurnWithOutcome(
         messages: [{ role: 'user', content: userContent }],
         maxTokens: effectiveMaxTokens,
         abortSignal: input.abortSignal,
+        maxRetries: 0,
       });
     } catch (err) {
       if (isAbort(err)) throw err;
