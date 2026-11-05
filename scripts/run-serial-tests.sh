@@ -154,6 +154,15 @@ command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout"
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-serial.XXXXXX")
 trap 'rm -rf "$LOG_DIR"' EXIT
 
+# HOME alone does NOT isolate Linux user crontab. Scheduler fixtures must never
+# register a real job or remove an operator's same-source schedule. Give every
+# child (including Bun's startup env snapshot) a per-HOME inert crontab instead.
+mkdir -p "$LOG_DIR/test-bin"
+cp test/helpers/crontab-fixture.sh "$LOG_DIR/test-bin/crontab"
+chmod 700 "$LOG_DIR/test-bin/crontab"
+export GBRAIN_TEST_CRONTAB_DIR="$LOG_DIR/crontab"
+export PATH="$LOG_DIR/test-bin:$PATH"
+
 if [ -n "$TIMEOUT_BIN" ]; then
   TIMEOUT_DESC="${PER_FILE_TIMEOUT}s via $TIMEOUT_BIN"
 else
