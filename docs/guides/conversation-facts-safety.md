@@ -30,3 +30,7 @@ An unfinished page remains retryable. Review its error before a new paid invocat
 ## Entity stub titles
 
 The markdown-first fact writer uses the shared YAML serializer when it creates an entity page. Numeric titles and YAML keywords remain strings through a file import. This prevents new malformed titles; it does not rewrite existing source files.
+
+## Unicode input limits
+
+The segment renderer and fact-extractor input limit do not cut a UTF-16 surrogate pair in half. This prevents the truncation step from creating a lone high surrogate from valid source text. A lone surrogate is JSON-escapable but some API decoders reject it. This correction does not prove a provider-specific incident cause: the original failed HTTP request, response status, and request ID were not retained.

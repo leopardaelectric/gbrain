@@ -286,7 +286,9 @@ export async function extractFactsFromTurnWithOutcome(
   if (!input.turnText) return { ok: true, facts: [] };
 
   // Anti-loop + sanitization.
-  let cleaned = input.turnText.slice(0, MAX_TURN_TEXT_CHARS);
+  // JSON.stringify escapes lone surrogates, but scalar-only API decoders reject them.
+  // Do not split an astral character at the UTF-16 input limit.
+  let cleaned = input.turnText.slice(0, MAX_TURN_TEXT_CHARS).replace(/[\uD800-\uDBFF]$/, '');
   for (const p of INJECTION_PATTERNS) cleaned = cleaned.replace(p.rx, p.replacement);
   cleaned = cleaned.trim();
   if (!cleaned) return { ok: true, facts: [] };

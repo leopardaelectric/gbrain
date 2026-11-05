@@ -499,7 +499,9 @@ export function renderSegmentForExtraction(
   // Truncate from the end of the body, keeping the header intact so the
   // extractor still sees the topical anchor.
   const slack = SEGMENT_TEXT_CHAR_LIMIT - header.length - 16;
-  return `${header}\n${body.slice(0, Math.max(0, slack))}\n…(truncated)`;
+  // Keep a whole Unicode scalar when the UTF-16 limit cuts a surrogate pair.
+  const prefix = body.slice(0, Math.max(0, slack)).replace(/[\uD800-\uDBFF]$/, '');
+  return `${header}\n${prefix}\n…(truncated)`;
 }
 
 // ---------------------------------------------------------------------------
