@@ -8,6 +8,9 @@ import * as path from 'node:path';
 import { withEnv } from './helpers/with-env.ts';
 import { logRerankFailure } from '../src/core/rerank-audit.ts';
 import { doctorSource, doctorFileSource } from './helpers/doctor-source.ts';
+// Load the ESM facade before describe callbacks. Mixing describe-time require
+// with test-time dynamic import leaves Bun's registry partially instantiated.
+import { checkGraphSignalsCoverage, checkLinkResolutionOpportunity } from '../src/commands/doctor.ts';
 
 describe('doctor command', () => {
   test('doctor module exports runDoctor', async () => {
@@ -1351,7 +1354,6 @@ describe('stub_guard_24h check (v0.34.5)', () => {
 
 describe('v0.40.4 — graph_signals_coverage check', () => {
   const { PGLiteEngine } = require('../src/core/pglite-engine.ts');
-  const { checkGraphSignalsCoverage } = require('../src/commands/doctor.ts');
 
   let engine: any;
 
@@ -1458,7 +1460,6 @@ describe('v0.40.4 — graph_signals_coverage check', () => {
 
 describe('issue #972 — link_resolution_opportunity check', () => {
   const { PGLiteEngine } = require('../src/core/pglite-engine.ts');
-  const { checkLinkResolutionOpportunity } = require('../src/commands/doctor.ts');
 
   let engine: any;
 

@@ -69,7 +69,7 @@ import {
   type PersistedMessage,
   type PersistedToolExec,
 } from './subagent-persistence.ts';
-import { randomUUIDv7 } from 'bun';
+import { randomUUIDv7 } from '../../uuid.ts';
 
 // ── Defaults ────────────────────────────────────────────────
 

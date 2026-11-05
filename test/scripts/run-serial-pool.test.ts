@@ -29,7 +29,8 @@ let hasTimeoutBin = false;
 function stageSandbox(): string {
   const root = mkdtempSync(join(tmpdir(), 'gbrain-serial-pool-'));
   mkdirSync(join(root, 'scripts', 'lib'), { recursive: true });
-  mkdirSync(join(root, 'test'), { recursive: true });
+  mkdirSync(join(root, 'test', 'helpers'), { recursive: true });
+  copyFileSync(join(REPO_ROOT, 'test/helpers/crontab-fixture.sh'), join(root, 'test/helpers/crontab-fixture.sh'));
   for (const s of ['run-serial-tests.sh', 'lib/test-env.sh']) {
     mkdirSync(dirname(join(root, 'scripts', s)), { recursive: true });
     copyFileSync(resolve(REPO_ROOT, 'scripts', s), join(root, 'scripts', s));
@@ -41,7 +42,7 @@ function stageSandbox(): string {
   const tools = [
     'bash', 'sh', 'env', 'dirname', 'basename', 'mktemp', 'date', 'sleep',
     'cat', 'tail', 'head', 'rm', 'mkdir', 'grep', 'sed', 'awk', 'wc', 'tr',
-    'find', 'sort', 'bun', 'timeout', 'gtimeout',
+    'find', 'sort', 'bun', 'timeout', 'gtimeout', 'cp', 'chmod', 'cksum', 'mv',
   ];
   for (const tool of tools) {
     const p = Bun.which(tool);

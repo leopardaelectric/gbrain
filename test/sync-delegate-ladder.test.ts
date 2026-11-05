@@ -11,7 +11,7 @@
  * mutation (deriveDelegatedTimeoutSeconds takes injected env/tty).
  */
 
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +24,16 @@ import {
   parseDelegatedSyncArgs,
 } from '../src/commands/sync-delegate.ts';
 import { CLI_FLAG_REGISTRY } from '../src/core/cli-flag-registry.generated.ts';
+import { _resetCliExitVerdictForTests, currentExitCode } from '../src/core/cli-force-exit.ts';
+
+let priorExitCode: typeof process.exitCode;
+beforeEach(() => { priorExitCode = process.exitCode; _resetCliExitVerdictForTests(); });
+afterEach(() => {
+  _resetCliExitVerdictForTests();
+  // Bun leaves the old code unchanged when assigned undefined; explicit zero
+  // restores the default successful test-process status.
+  process.exitCode = priorExitCode ?? 0;
+});
 
 describe('parseDelegatedSyncArgs (default-deny)', () => {
   test('bare sync → empty options, no explicit source', () => {
@@ -137,10 +147,12 @@ describe('maybeDelegateSyncToServe short-circuits (no socket I/O)', () => {
   test('live serve + unsupported flag → handled (named refusal, no socket needed)', async () => {
     const dir = dirWithLiveServeLock();
     expect(await maybeDelegateSyncToServe(dir, ['--repo', '/tmp/x'])).toBe(true);
+    expect(currentExitCode()).toBe(1);
   });
 
   test('live serve + no IPC socket → handled (polite refusal)', async () => {
     const dir = dirWithLiveServeLock();
     expect(await maybeDelegateSyncToServe(dir, [])).toBe(true);
+    expect(currentExitCode()).toBe(1);
   });
 });

@@ -33,7 +33,7 @@
  * doStream is not yet implemented; the model declares no streaming. Callers
  * (gateway.toolLoop primarily) use doGenerate.
  */
-import { randomUUIDv7 } from 'bun';
+import { randomUUIDv7 } from '../../uuid.ts';
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import {

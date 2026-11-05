@@ -17,7 +17,7 @@
  * the same shape for outbound provider concurrency caps).
  */
 
-import { randomUUIDv7 } from 'bun';
+import { randomUUIDv7 } from '../uuid.ts';
 import type { BrainEngine } from '../engine.ts';
 import { sqlQueryForEngine } from '../sql-query.ts';
 import { BudgetExceededError } from '../spend-log.ts';
