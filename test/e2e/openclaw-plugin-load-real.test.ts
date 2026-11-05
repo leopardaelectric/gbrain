@@ -26,9 +26,9 @@
  *      `openclaw config validate` confirms the slot binding is accepted.
  *   5. `openclaw plugins doctor` surfaces zero error-level diagnostics for
  *      our id.
- *   6. Public-SDK round-trip: import `registerContextEngine` from
- *      `openclaw/plugin-sdk` and register our factory directly, exercising
- *      the same registry our entry's register() hits.
+ *   6. Public-SDK round-trip: resolve the installed package's exported
+ *      `openclaw/plugin-sdk/core`, use `definePluginEntry`, and execute the
+ *      factory captured from the real entry's register() under Node.
  *
  * Skips gracefully when `openclaw` CLI is unavailable (Tier 2 like
  * test/e2e/skills.test.ts). Uses an isolated `--profile` so the user's real
@@ -39,8 +39,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, realpathSync } from 'fs';
-import { join, dirname } from 'path';
-import { tmpdir, homedir } from 'os';
+import { join, dirname, delimiter } from 'path';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'os';
 
 // ── Tier 2 gating ──────────────────────────────────────────────────────────
 const OPENCLAW = which('openclaw');
@@ -60,7 +61,9 @@ const ENGINE_ID = 'gbrain-context';
 // Use a process-unique profile name so two concurrent test runs (e.g.,
 // Conductor sibling workspaces) don't collide on `~/.openclaw-<profile>`.
 const PROFILE = `gbrain-ctx-e2e-${process.pid}`;
-const PROFILE_DIR = join(homedir(), `.openclaw-${PROFILE}`);
+// Isolate even bare invocations, not only scripts/run-e2e.sh. Never inherit
+// provider keys, database URLs, or OPENCLAW_* overrides into the CLI host.
+const HOST_HOME = SKIP ? '' : mkdtempSync(join(tmpdir(), 'gbrain-ctx-host-'));
 
 let fixtureDir = '';
 let repoRoot = '';
@@ -73,7 +76,7 @@ function runOpenclaw(args: string[], opts: { timeoutMs?: number } = {}): {
   const r = spawnSync(OPENCLAW!, ['--profile', PROFILE, ...args], {
     encoding: 'utf8',
     timeout: opts.timeoutMs ?? 60_000,
-    env: { ...process.env },
+    env: { PATH: process.env.PATH, HOME: HOST_HOME, GBRAIN_HOME: HOST_HOME },
   });
   return {
     exitCode: r.status ?? -1,
@@ -109,7 +112,7 @@ function cleanup() {
     runOpenclaw(['plugins', 'uninstall', '--force', PLUGIN_ID], { timeoutMs: 30_000 });
   } catch { /* noop */ }
   try {
-    if (existsSync(PROFILE_DIR)) rmSync(PROFILE_DIR, { recursive: true, force: true });
+    if (HOST_HOME && existsSync(HOST_HOME)) rmSync(HOST_HOME, { recursive: true, force: true });
   } catch { /* noop */ }
   try {
     if (fixtureDir && existsSync(fixtureDir)) rmSync(fixtureDir, { recursive: true, force: true });
@@ -144,6 +147,8 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
     // (`src/openclaw-context-engine.ts`) that the release ships; only the
     // packaging layer (test fixture's package.json) is test-specific.
     //
+    // OpenClaw loads plugins in Node, not Bun. The Node target must reject
+    // Bun-only builtins rather than silently compiling references to global Bun.
     // `--outdir` (not `--outfile`): since the Retrieval Reflex ladder
     // (v0.42.39.0, 8f45624e5 #2019) the entry's import chain reaches
     // engine-factory → pglite-engine → @electric-sql/pglite, whose WASM/
@@ -158,7 +163,7 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
       [
         'build',
         join(repoRoot, 'src', 'openclaw-context-engine.ts'),
-        '--target=bun',
+        '--target=node',
         '--outdir',
         fixtureDir,
         '--entry-naming',
@@ -174,14 +179,19 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
     }
 
     // Install via openclaw plugins install --link into the isolated profile.
-    // `--dangerously-force-unsafe-install` is required because openclaw's
-    // dangerous-code scanner flags the surrounding gbrain repo (tests use
-    // child_process etc.); the test fixture is dev-trusted, same provenance
-    // as the test runner.
+    // Consent applies only to our disposable local fixture/profile. Detect
+    // the supported flags; do not change host install policy or retry installs.
+    const installHelp = runOpenclaw(['plugins', 'install', '--help']);
+    if (installHelp.exitCode !== 0) throw new Error(installHelp.stderr);
+    const help = `${installHelp.stdout}\n${installHelp.stderr}`;
+    const trustFlag = /(?:^|\s)--force(?:[ ,]|$)/m.test(help)
+      ? '--force'
+      : '--dangerously-force-unsafe-install';
     const install = runOpenclaw([
       'plugins', 'install',
       '--link',
-      '--dangerously-force-unsafe-install',
+      trustFlag,
+      ...(/--accept-capabilities/.test(help) ? ['--accept-capabilities'] : []),
       fixtureDir,
     ], { timeoutMs: 60_000 });
     if (install.exitCode !== 0) {
@@ -282,113 +292,85 @@ describe('openclaw-plugin-load-real (Tier 2 e2e)', () => {
   );
 
   it.skipIf(SKIP)(
-    'openclaw public SDK registerContextEngine accepts our factory shape',
-    async () => {
-      // Programmatic round-trip via the SDK that plugin entries actually
-      // use. This is the API our register(api) calls; importing and using
-      // it directly proves our factory's call signature matches what
-      // openclaw's runtime expects. If openclaw renames the export or
-      // changes the factory contract, this test fails.
-      // Try the bare specifier first (works if openclaw is installed in the
-      // workspace's node_modules). Fall back to the global install location
-      // discovered via `npm root -g` (common for users who installed
-      // openclaw with `npm install -g openclaw`). The fallback uses an
-      // absolute path so Bun's resolver doesn't need a registered
-      // module-mapping. If both fail, fail loudly — this is the round-trip
-      // test, silently skipping defeats its purpose now that the suite-
-      // level fixture proved openclaw is installed and reachable.
-      let registerContextEngine: ((id: string, factory: () => unknown) => void) | undefined;
-
-      // Minimal structural shape of the openclaw plugin SDK surface this
-      // test uses. `openclaw` is deliberately NOT a declared dependency —
-      // the test probes whatever install is present at runtime — so the
-      // import result is cast to this local interface instead of letting
-      // TypeScript type-check against whichever openclaw version happens
-      // to be resolvable from an ancestor node_modules. That keeps
-      // `bunx tsc --noEmit` hermetic on a clean checkout (#2729); the
-      // export's presence/shape is still verified at runtime below.
-      interface OpenclawPluginSdk {
-        registerContextEngine?: (id: string, factory: () => unknown) => void;
-      }
-
-      const importErrors: string[] = [];
-      try {
-        // @ts-ignore — bare specifier; whether this resolves (TS2307 or not)
-        // depends on ambient node_modules, so @ts-expect-error would flip.
-        const sdk = (await import('openclaw/plugin-sdk')) as unknown as OpenclawPluginSdk;
-        registerContextEngine = sdk.registerContextEngine;
-      } catch (err) {
-        importErrors.push(`bare 'openclaw/plugin-sdk': ${err instanceof Error ? err.message : String(err)}`);
-      }
-
-      if (!registerContextEngine) {
-        // Bare specifier failed — resolve via the installed openclaw binary
-        // itself. `which openclaw` gave us a shim path; `realpathSync`
-        // follows the symlink chain to the actual openclaw module directory
-        // (e.g., /opt/homebrew/lib/node_modules/openclaw/openclaw.mjs).
-        // From there, dist/plugin-sdk/index.js is the public SDK entry.
-        // This works regardless of how openclaw was installed (Homebrew,
-        // bare npm -g, nvm, asdf, volta) because it follows the actual
-        // filesystem link.
-        try {
-          const realBin = realpathSync(OPENCLAW!);
-          const openclawModuleDir = dirname(realBin);
-          const sdkPath = join(openclawModuleDir, 'dist', 'plugin-sdk', 'index.js');
-          if (existsSync(sdkPath)) {
-            // @ts-ignore — absolute-path dynamic import bypasses node_modules resolution.
-            const sdk = await import(sdkPath);
-            registerContextEngine = sdk.registerContextEngine;
-          } else {
-            importErrors.push(`SDK not found at ${sdkPath} (resolved from openclaw bin ${realBin})`);
+    'openclaw public SDK accepts our entry and its registered factory runs in Node',
+    () => {
+      // Current OpenClaw exposes registration on OpenClawPluginApi, NOT a
+      // standalone registerContextEngine export. Use its public entry helper,
+      // then exercise the factory delivered by our real register() in Node.
+      // The preceding runtime inspections prove the REAL host registry accepts
+      // this entry; this guard checks the public SDK and factory execution.
+      // Do not assume the first CLI on PATH is a package: agent launchers can
+      // be shell shims. Walk all PATH candidates, follow symlinks, verify the
+      // package identity and resolve through its PUBLIC exports map.
+      let sdkPath: string | undefined;
+      const resolutionErrors: string[] = [];
+      for (const binDir of (process.env.PATH ?? '').split(delimiter)) {
+        const candidate = join(binDir, 'openclaw');
+        if (!existsSync(candidate)) continue;
+        let dir = dirname(realpathSync(candidate));
+        while (true) {
+          const pkgPath = join(dir, 'package.json');
+          if (existsSync(pkgPath)) {
+            const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+            if (pkg.name === 'openclaw') {
+              try {
+                sdkPath = createRequire(pkgPath).resolve('openclaw/plugin-sdk/core');
+              } catch (err) {
+                resolutionErrors.push(`${pkgPath}: ${String(err)}`);
+              }
+              break;
+            }
           }
-        } catch (err) {
-          importErrors.push(`bin-relative resolve: ${err instanceof Error ? err.message : String(err)}`);
+          const parent = dirname(dir);
+          if (parent === dir) break;
+          dir = parent;
         }
+        if (sdkPath) break;
       }
-
-      if (!registerContextEngine) {
-        throw new Error(
-          `openclaw/plugin-sdk could not be resolved from any known location. ` +
-          `Errors:\n  ${importErrors.join('\n  ')}\n` +
-          `This test runs only when openclaw CLI is installed; SDK resolution should follow.`,
-        );
-      }
-      expect(typeof registerContextEngine).toBe('function');
-
-      const { createGBrainContextEngine } = await import('../../src/core/context-engine.ts');
+      if (!sdkPath) throw new Error(`Cannot resolve installed OpenClaw public SDK: ${resolutionErrors.join('; ')}`);
 
       const tmp = mkdtempSync(join(tmpdir(), 'gbrain-ctx-sdk-rt-'));
       try {
         mkdirSync(join(tmp, 'memory'), { recursive: true });
         writeFileSync(join(tmp, 'memory', 'heartbeat-state.json'), '{}');
         writeFileSync(join(tmp, 'memory', 'upcoming-flights.json'), '{}');
-
-        // Use a process-unique id so we don't collide with whatever the
-        // suite-level plugin installation already wrote into the registry.
-        const dynamicId = `${ENGINE_ID}-sdk-rt-${process.pid}`;
-
-        // Should not throw. If openclaw's API contract drifts (e.g., requires
-        // additional args, returns Promise instead of void), this fails.
-        registerContextEngine!(
-          dynamicId,
-          () => createGBrainContextEngine({ workspaceDir: tmp }),
-        );
-
-        // Also verify the engine the factory produces still has the
-        // expected ContextEngine interface shape (info, ingest, assemble,
-        // compact) — these are the methods openclaw will call.
-        const engine = createGBrainContextEngine({ workspaceDir: tmp });
-        expect(engine.info.id).toBe(ENGINE_ID);
-        expect(typeof engine.ingest).toBe('function');
-        expect(typeof engine.assemble).toBe('function');
-        expect(typeof engine.compact).toBe('function');
-
-        // Assemble actually produces the Live Context block — same code
-        // path openclaw will hit when it resolves the slot during an agent
-        // turn. Proves the FULL load-and-call path works against openclaw's
-        // public SDK.
-        const result = await engine.assemble({ sessionId: 'sdk-roundtrip', messages: [] });
-        expect(result.systemPromptAddition).toContain('Live Context');
+        const probePath = join(tmp, 'probe.mjs');
+        writeFileSync(probePath, `
+          import assert from 'node:assert/strict';
+          import { pathToFileURL } from 'node:url';
+          assert.equal(globalThis.Bun, undefined, 'must execute in the real Node host');
+          const { definePluginEntry } = await import(pathToFileURL(${JSON.stringify(sdkPath)}).href);
+          assert.equal(typeof definePluginEntry, 'function');
+          const { default: entry } = await import(pathToFileURL(${JSON.stringify(join(fixtureDir, 'entry.js'))}).href);
+          const plugin = definePluginEntry(entry);
+          assert.equal(plugin.id, ${JSON.stringify(PLUGIN_ID)});
+          let registeredId;
+          let registeredFactory;
+          plugin.register({ registerContextEngine(id, factory) {
+            assert.equal(registeredFactory, undefined, 'must register exactly once');
+            registeredId = id;
+            registeredFactory = factory;
+          } });
+          assert.equal(registeredId, ${JSON.stringify(ENGINE_ID)});
+          assert.equal(typeof registeredFactory, 'function');
+          const engine = await registeredFactory({ workspaceDir: ${JSON.stringify(tmp)} });
+          assert.equal(engine.info.id, ${JSON.stringify(ENGINE_ID)});
+          for (const method of ['ingest', 'assemble', 'compact']) assert.equal(typeof engine[method], 'function');
+          const result = await engine.assemble({ sessionId: 'sdk-roundtrip', messages: [] });
+          assert.match(result.systemPromptAddition, /Live Context/);
+          console.log(JSON.stringify({ node: process.version, sdk: 'openclaw/plugin-sdk/core', registeredId, assembled: true }));
+        `);
+        // No database URL or provider credentials cross this boundary. HOME
+        // remains disposable and the zero-message assemble needs no brain.
+        const r = spawnSync('node', [probePath], {
+          encoding: 'utf8', timeout: 30_000,
+          env: { PATH: process.env.PATH, HOME: tmp, GBRAIN_HOME: tmp },
+        });
+        if (r.status !== 0) throw new Error(`Node SDK round-trip failed:\n${r.stdout}\n${r.stderr}`);
+        const result = JSON.parse(r.stdout);
+        expect(result.registeredId).toBe(ENGINE_ID);
+        expect(result.assembled).toBe(true);
+        expect(result.sdk).toBe('openclaw/plugin-sdk/core');
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }
