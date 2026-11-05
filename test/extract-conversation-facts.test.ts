@@ -528,6 +528,28 @@ describe('runExtractConversationFactsCore', () => {
     expect(result.pages_processed).toBe(1);
     expect(result.facts_inserted).toBe(0);
     expect(result.segments_processed).toBeGreaterThanOrEqual(1);
+    expect(result.facts_extracted).toBe(0);
+    expect(result.spent_usd).toBe(0);
+    expect(mainChatCalls).toBe(0);
+    expect(fallbackCalls).toBe(0);
+    const locks = await engine.executeRaw(`SELECT * FROM gbrain_cycle_locks`);
+    expect(locks).toHaveLength(0);
+    const facts = await engine.executeRaw(`SELECT * FROM facts`);
+    expect(facts).toHaveLength(0);
+  });
+
+  test('dry-run never invokes an injected extractor', async () => {
+    let calls = 0;
+    const result = await runExtractConversationFactsCore(engine, {
+      sourceId: 'default',
+      slug: 'conversations/imessage/alice-example',
+      dryRun: true,
+      sleepMs: 0,
+      extractor: async () => { calls++; throw new Error('preview called extractor'); },
+    });
+    expect(result.segments_processed).toBeGreaterThan(0);
+    expect(calls).toBe(0);
+    expect(mainChatCalls).toBe(0);
   });
 
   test('dry-run does not write the extract_rollup_7d cache row', async () => {

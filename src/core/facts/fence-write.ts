@@ -39,7 +39,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendF
 import { dirname, isAbsolute, relative } from 'node:path';
 
 import type { BrainEngine, NewFact, FactVisibility } from '../engine.ts';
-import { inferTypeFromPack } from '../markdown.ts';
+import { inferTypeFromPack, serializeMarkdown } from '../markdown.ts';
 import { loadActivePackBestEffort } from '../schema-pack/best-effort.ts';
 import { withPageLock } from '../page-lock.ts';
 import { gbrainPath } from '../config.ts';
@@ -231,7 +231,7 @@ function stubEntityPage(
   const title = tail
     .replace(/[-_/]+/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase()) || slug;
-  return `---\ntype: ${type}\ntitle: ${title}\nslug: ${slug}\n---\n\n# ${title}\n`;
+  return serializeMarkdown({ slug }, `# ${title}`, '', { type, title, tags: [] });
 }
 
 /**

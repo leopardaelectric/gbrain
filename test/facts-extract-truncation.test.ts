@@ -21,9 +21,12 @@ import {
 import type { ChatOpts, ChatResult } from '../src/core/ai/gateway.ts';
 import {
   extractFactsFromTurn,
+  extractFactsFromTurnWithOutcome,
   getFactsExtractionMaxTokens,
   DEFAULT_EXTRACTION_MAX_TOKENS,
 } from '../src/core/facts/extract.ts';
+import { BudgetTracker, BudgetExhausted } from '../src/core/budget/budget-tracker.ts';
+import { withBudgetTracker } from '../src/core/ai/gateway.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
 beforeEach(() => {
@@ -153,26 +156,66 @@ describe('extractFactsFromTurn malformed-output retry', () => {
     expect(facts[0]!.fact).toContain('alcohol');
   });
 
-  test('malformed retry after a truncation retry re-sends at the escalated cap [1x, 2x, 2x]', async () => {
-    // Truncation retry doubles the cap; when THAT response completes but is
-    // malformed, the malformed retry must keep the doubled cap — dropping
-    // back to 1x would just re-truncate the same payload.
+  test('truncation then malformed output stops after two paid attempts', async () => {
     const seen: ChatOpts[] = [];
     __setChatTransportForTests(async (opts) => {
       seen.push(opts);
-      if (seen.length === 1) return chatResult('{"facts":[{"fact":"user gave up alco', 'length');
-      if (seen.length === 2) return chatResult('not json', 'end');
-      return chatResult(GOOD_JSON, 'end');
+      return seen.length === 1
+        ? chatResult('{"facts":[', 'length')
+        : chatResult('not json', 'end');
     });
-
-    const facts = await extractFactsFromTurn({
-      turnText: 'I gave up alcohol.',
-      source: 'test:escalated-cap',
+    const outcome = await extractFactsFromTurnWithOutcome({
+      turnText: 'A synthetic event.', source: 'test:retry-bound',
     });
+    expect(seen.map(o => o.maxTokens)).toEqual([4000, 8000]);
+    expect(seen.every(o => o.maxRetries === 0)).toBe(true);
+    expect(outcome).toMatchObject({ ok: false, reason: 'malformed_output' });
+  });
 
-    expect(seen.map((o) => o.maxTokens)).toEqual([4000, 8000, 8000]);
-    expect(facts).toHaveLength(1);
-    expect(facts[0]!.fact).toContain('alcohol');
+  test('provider timeout is not replayed automatically', async () => {
+    let calls = 0;
+    __setChatTransportForTests(async () => {
+      calls++;
+      throw new DOMException('Timed out', 'TimeoutError');
+    });
+    const outcome = await extractFactsFromTurnWithOutcome({
+      turnText: 'A synthetic event.', source: 'test:timeout',
+    });
+    expect(calls).toBe(1);
+    expect(outcome).toMatchObject({ ok: false, reason: 'provider_error' });
+  });
+
+  test('cancellation during output-retry backoff prevents the next call', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    __setChatTransportForTests(async () => {
+      calls++;
+      controller.abort();
+      return chatResult('invalid', 'end');
+    });
+    await expect(extractFactsFromTurnWithOutcome({
+      turnText: 'A synthetic event.', source: 'test:cancel-retry',
+      abortSignal: controller.signal,
+    })).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+
+  test('the output retry must reserve against the same spend cap', async () => {
+    let calls = 0;
+    __setChatTransportForTests(async () => {
+      calls++;
+      const result = chatResult('invalid', 'end');
+      result.usage.input_tokens = 10000;
+      result.usage.output_tokens = 1000;
+      return result;
+    });
+    const tracker = new BudgetTracker({ label: 'synthetic-retry', maxCostUsd: 0.07 });
+    const outcome = await withBudgetTracker(tracker, () => extractFactsFromTurnWithOutcome({
+      turnText: 'A synthetic event.', source: 'test:budget-retry',
+    }));
+    expect(calls).toBe(1);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toBeInstanceOf(BudgetExhausted);
   });
 
   test('second malformed response is still fail-closed', async () => {

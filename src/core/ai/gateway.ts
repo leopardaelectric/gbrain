@@ -3231,6 +3231,8 @@ export interface ChatOpts {
    * request body — the AI SDK routes provider options by provider key.
    */
   cacheSystem?: boolean;
+  /** Override SDK retries when the caller owns a bounded paid retry policy. */
+  maxRetries?: number;
 }
 
 /**
@@ -3785,6 +3787,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
       messages: toModelMessages(repairToolPairing(opts.messages)) as any,
       tools: opts.tools && opts.tools.length > 0 ? tools : undefined,
       maxOutputTokens: opts.maxTokens ?? defaultMaxOutputTokens(modelStr),
+      ...(opts.maxRetries !== undefined && { maxRetries: opts.maxRetries }),
       // v0.42.20.0 — default a chat timeout (composes with the caller's signal,
       // shorter wins). Covers native-anthropic (the default provider + facts Haiku).
       abortSignal: withDefaultTimeout(opts.abortSignal, AI_CHAT_TIMEOUT_MS),
