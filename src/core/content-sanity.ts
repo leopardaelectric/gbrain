@@ -158,6 +158,38 @@ export interface ContentSanityResult {
   shouldSkipEmbed: boolean;
 }
 
+// A denial statement, not an arbitrary sentence starting with the same words.
+// Keep both colon and no-colon permission/policy/resource messages. Technical
+// prose ("Access denied errors are permanent") is not a denial statement.
+const ACCESS_DENIED_LINE = /^access denied(?:[.!:]?|(?:[ \t]+|[ \t]*:[ \t]*)(?:by (?:the |a )?policy|to (?:this|the|requested) resource)[.!]?|(?:[ \t]*:[ \t]*|[ \t]+)(?:you (?:do not|don't) have permission\b|you are not authorized\b|(?:your |the |this )?request (?:is|was|has been) (?:denied|blocked)\b|no permission\b|not authorized\b|forbidden\b|blocked\b).*)$/i;
+
+/** Access-denial pages need document context as well as a phrase match.
+ * Only a leading denial with minimal denial/diagnostic text is high confidence.
+ * A later occurrence in an article, quote, code sample or error catalog is data.
+ * Normalization is detection-only; the caller's stored body is never changed.
+ * Input is already bounded to the shared scan window, not a full HTML parser. */
+function matchesAccessDenied(title: string, bodyHead: string): boolean {
+  if (ACCESS_DENIED_LINE.test(title.trim().replace(/\s+/g, ' '))) return true;
+  const lines = bodyHead
+    // Do not promote quoted/code examples into live denial text.
+    .replace(/<(pre|code|blockquote)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '\n[example]\n')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+    .replace(/<\/?(?:html|head|body|title|h[1-6]|p|div|br|hr)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => /^[ \t]{4}|^\t/.test(line) ? '[example]' : line.trim().replace(/^#{1,6}\s+/, ''));
+  const errorHeading = /^(?:403(?: forbidden)?|forbidden)[.!]?$/i;
+  // A numeric 403 heading can precede the denial in an HTML or text dump.
+  if (lines.length > 1 && errorHeading.test(lines[0])) lines.shift();
+  if (!lines.length || !ACCESS_DENIED_LINE.test(lines[0])) return false;
+  const denialDetail = /^(?:you (?:do not|don't) have permission\b|you are not authorized\b|no permission\b|(?:your |the |this )?request (?:is|was|has been) (?:denied|blocked)\b|please contact\b|contact (?:the )?(?:site |website )?(?:owner|administrator)\b|(?:request|reference|error) (?:id|number|code)\s*:).*/i;
+  return lines.slice(1).every((line) =>
+    ACCESS_DENIED_LINE.test(line) || errorHeading.test(line) || denialDetail.test(line) ||
+    /^(?:by (?:the |a )?policy|to (?:this|the|requested) resource)[.!]?$/i.test(line));
+}
+
 /** Built-in pattern set. Hand-vetted regex compiled once at module
  *  load. Adding a pattern: include a stable `name`, a case-insensitive
  *  regex with `i` flag, and document the real-world example in plain
@@ -200,10 +232,10 @@ export const BUILT_IN_JUNK_PATTERNS: ReadonlyArray<JunkPattern> = Object.freeze(
     pattern: /enable javascript and cookies to continue/i,
     applies_to: 'both',
   },
-  // Generic 403 / blocked-access pages.
+  // Generic 403 / blocked-access pages; context is checked below.
   {
     name: 'access_denied',
-    pattern: /^\s*access denied\b/im,
+    pattern: ACCESS_DENIED_LINE,
     applies_to: 'both',
   },
   // CAPTCHA gates.
@@ -385,6 +417,10 @@ export function assessContentSanity(opts: {
   const junk_pattern_matches: string[] = [];
   for (const p of BUILT_IN_JUNK_PATTERNS) {
     const scope = p.applies_to ?? 'both';
+    if (p.name === 'access_denied') {
+      if (matchesAccessDenied(title, bodyHead)) junk_pattern_matches.push(p.name);
+      continue;
+    }
     let matched = false;
     if (scope === 'title' || scope === 'both') {
       if (p.pattern.test(title)) matched = true;

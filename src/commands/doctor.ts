@@ -3332,7 +3332,7 @@ export async function buildChecks(
         sourceMessages.push(`${src.source_id}: ${src.total} (${codes})`);
       }
       const fixHint = report.partial
-        ? `Raise GBRAIN_DOCTOR_FM_TIMEOUT_MS or run \`gbrain frontmatter validate <source>\` directly. Fix issues: \`gbrain frontmatter validate <source> --fix\``
+        ? `Raise GBRAIN_DOCTOR_FM_TIMEOUT_MS or run \`gbrain frontmatter validate <source-path> --json\` directly. Complete the read-only scan before reviewing confirmed issues for repair.`
         : `Fix: gbrain frontmatter validate <source-path> --fix`;
       checks.push({
         name: 'frontmatter_integrity',

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { resetPgliteState } from './helpers/reset-pglite.ts';
 import { withEnv } from './helpers/with-env.ts';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { importFromContent } from '../src/core/import-file.ts';
@@ -52,6 +52,35 @@ created: 2026-05-24
 ---
 
 `;
+
+describe('importFromContent — access denial context', () => {
+  test('sanitized AWS article stays visible and chunked with unchanged parsed body', async () => {
+    await withIsolatedHome(async () => {
+      const body = readFileSync(new URL('./fixtures/content-sanity/aws-deploy-retry.md', import.meta.url), 'utf8');
+      const result = await importFromContent(engine, 'test/deploy-retries', FRONTMATTER + body, { noEmbed: true });
+      expect(result.status).toBe('imported');
+      expect(result.quarantined).not.toBe(true);
+      const page = await engine.getPage('test/deploy-retries');
+      expect(page).not.toBeNull();
+      expect(isQuarantined(page!.frontmatter as Record<string, unknown>)).toBe(false);
+      // Markdown parsing trims the trailing newline; detection must not rewrite prose.
+      expect(page!.compiled_truth).toBe(body.trim());
+      expect((await engine.getChunks('test/deploy-retries')).length).toBeGreaterThan(0);
+    });
+  });
+
+  test('policy and resource denials still quarantine and write no chunks', async () => {
+    await withIsolatedHome(async () => {
+      for (const [index, body] of ['Access denied by policy', 'Access denied to this resource',
+        '<title>Access denied: You do not have permission.</title><h1>Access denied</h1>'].entries()) {
+        const slug = `test/denial-${index}`;
+        const result = await importFromContent(engine, slug, FRONTMATTER + body, { noEmbed: true });
+        expect(result.quarantined).toBe(true);
+        expect((await engine.getChunks(slug)).length).toBe(0);
+      }
+    });
+  });
+});
 
 describe('importFromContent — junk quarantine (v0.42 default disposition)', () => {
   test('Cloudflare junk title → page LANDS quarantined (hidden), does NOT throw', async () => {
