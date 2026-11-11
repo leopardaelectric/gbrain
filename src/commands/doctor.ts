@@ -3129,7 +3129,6 @@ export async function buildChecks(
       message: `Skipped (${msg})`,
     });
   }
-
   progress.heartbeat('content_sanity_audit_recent');
   try {
     const { readRecentContentSanityEvents, summarizeContentSanityEvents } =
