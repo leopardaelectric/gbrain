@@ -170,6 +170,7 @@ const ACCESS_DENIED_LINE = /^access denied(?:[.!:]?|(?:[ \t]+|[ \t]*:[ \t]*)(?:b
  * Input is already bounded to the shared scan window, not a full HTML parser. */
 function matchesAccessDenied(title: string, bodyHead: string): boolean {
   if (ACCESS_DENIED_LINE.test(title.trim().replace(/\s+/g, ' '))) return true;
+  const htmlDocument = /^\s*(?:<!doctype\s+html\b|<(?:html|head|body|title|h[1-6])\b)/i.test(bodyHead);
   const lines = bodyHead
     // Do not promote quoted/code examples into live denial text.
     .replace(/<(pre|code|blockquote)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '\n[example]\n')
@@ -179,7 +180,7 @@ function matchesAccessDenied(title: string, bodyHead: string): boolean {
     .replace(/&nbsp;|&#160;/gi, ' ')
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
-    .map((line) => /^[ \t]{4}|^\t/.test(line) ? '[example]' : line.trim().replace(/^#{1,6}\s+/, ''));
+    .map((line) => !htmlDocument && /^(?:[ \t]{4}|\t)/.test(line) ? '[example]' : line.trim().replace(/^#{1,6}\s+/, ''));
   const errorHeading = /^(?:403(?: forbidden)?|forbidden)[.!]?$/i;
   // A numeric 403 heading can precede the denial in an HTML or text dump.
   if (lines.length > 1 && errorHeading.test(lines[0])) lines.shift();
