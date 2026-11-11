@@ -81,8 +81,9 @@ describe('doctor frontmatter_integrity — load-bearing render strings', () => {
 
 describe('partial scan is not a repair diagnosis', () => {
   test('partial guidance requests a complete read-only scan, not --fix', () => {
-    const hint = DOCTOR_SOURCE.slice(DOCTOR_SOURCE.indexOf('const fixHint = report.partial'),
-      DOCTOR_SOURCE.indexOf('checks.push({', DOCTOR_SOURCE.indexOf('const fixHint = report.partial')));
+    const start = DOCTOR_SOURCE.indexOf('const fixHint = report.partial');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const hint = DOCTOR_SOURCE.slice(start, DOCTOR_SOURCE.indexOf('checks.push({', start));
     const partial = hint.split(': `Fix:')[0];
     expect(partial).toContain('gbrain frontmatter validate <source-path> --json');
     expect(partial).toContain('Complete the read-only scan');

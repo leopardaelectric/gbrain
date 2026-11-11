@@ -3129,7 +3129,6 @@ export async function buildChecks(
       message: `Skipped (${msg})`,
     });
   }
-
   progress.heartbeat('content_sanity_audit_recent');
   try {
     const { readRecentContentSanityEvents, summarizeContentSanityEvents } =
@@ -3156,22 +3155,23 @@ export async function buildChecks(
       // dispositions or volume. This keeps doctor from treating expected
       // code-corpus telemetry as an unhealthy brain.
       //
-      // v0.42 renamed the hard path: a rejected page emits `reject` and a
-      // quarantined (hidden) junk page emits `quarantine`; `hard_block` is now
-      // only the pre-v0.42 legacy alias. Counting `hard_block` alone let fresh
+      // Hard dispositions: reject/quarantine (v0.42), hard_block (legacy). Counting `hard_block` alone let fresh
       // junk-ingest evidence (`reject`/`quarantine`) clear as `ok` whenever
       // fewer than 10 events landed. `flag` is a warn disposition (still
       // searchable, agent warned on retrieval), so it joins `soft_block`.
       const hardBlocked =
         summary.by_type.hard_block + summary.by_type.reject + summary.by_type.quarantine;
       const softBlocked = summary.by_type.soft_block + summary.by_type.flag;
+      const { resolveRecentContentSanityEvents } = await import('../core/audit/content-sanity-resolution.ts');
+      const remediation = await resolveRecentContentSanityEvents(engine, events);
       const status: 'ok' | 'warn' | 'fail' =
-        hardBlocked > 0 ? 'fail' :
+        remediation.unresolved.length > 0 ? 'fail' :
           (softBlocked > 0 || events.length >= 10) ? 'warn' : 'ok';
       checks.push({
         name: 'content_sanity_audit_recent',
         status,
-        message: `${events.length} events (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft=${softBlocked} [soft_block=${summary.by_type.soft_block} flag=${summary.by_type.flag}] warn=${summary.by_type.warn})${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
+        message: `${events.length} events (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft=${softBlocked} [soft_block=${summary.by_type.soft_block} flag=${summary.by_type.flag}] warn=${summary.by_type.warn})${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}. Hard history: unresolved=${remediation.unresolved.length}, verified-remediated=${remediation.resolved.length}; original events retained. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
+        details: { raw_summary: summary, remediation, hard_events: events.filter(e => ['hard_block', 'reject', 'quarantine'].includes(e.event_type)).map(e => ({ ts: e.ts, source_id: e.source_id, slug: e.slug, event_type: e.event_type })) },
       });
     }
   } catch (err) {
