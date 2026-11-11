@@ -236,6 +236,9 @@ export async function runFactsBackstop(
   ctx: FactsBackstopCtx,
 ): Promise<FactsBackstopResult> {
   const mode = ctx.mode ?? 'queue';
+  // Page-shaped callers know the origin page; keep caller-supplied provenance.
+  // Raw runFactsPipeline callers have no page and remain unchanged.
+  ctx = { ...ctx, sourceSlug: ctx.sourceSlug ?? parsedPage.slug };
 
   // --- Eligibility + kill-switch gates (run before any LLM cost) ---
   const { isFactsExtractionEnabled } = await import('./extract.ts');
@@ -311,6 +314,7 @@ export async function runFactsBackstop(
           {
             slug: parsedPage.slug,
             sourceId: ctx.sourceId,
+            sourceSlug: ctx.sourceSlug,
             source: ctx.source,
             sessionId: ctx.sessionId,
             notabilityFilter: ctx.notabilityFilter ?? 'all',
