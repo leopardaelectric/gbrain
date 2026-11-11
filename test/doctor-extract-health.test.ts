@@ -223,6 +223,9 @@ describe('computeExtractHealthCheck — WARN paths', () => {
     expect(check.message).toContain('facts.conversation');
     expect(check.message).toContain('50');
     expect((check.details as any)?.kinds[0].halt_rate).toBe(0.5);
+    expect(check.message).toContain('historical halt rate');
+    expect(check.message).toContain('does not establish a current unfinished page');
+    expect((check.details as any).kinds[0].halt_count).toBe(5);
   });
 
   test('multiple kinds with high halt rate: top-3 listed in message', async () => {

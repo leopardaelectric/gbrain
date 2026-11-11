@@ -920,7 +920,7 @@ export async function computeExtractHealthCheck(
       return {
         name,
         status: 'warn',
-        message: `${actionableHighHaltKinds.length} kind(s) with actionable halt rate > 10% (top: ${top3})${activeFenceNote}`,
+        message: `${actionableHighHaltKinds.length} kind(s) with historical halt rate > 10% (top: ${top3}); this 7-day run history does not establish a current unfinished page or a current provider failure${activeFenceNote}`,
         details: {
           schema_version: 1,
           kinds,
