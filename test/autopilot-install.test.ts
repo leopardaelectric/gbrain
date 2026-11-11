@@ -35,8 +35,11 @@ beforeEach(() => {
   for (const k of envKeys()) envSnapshot[k] = process.env[k];
   tmp = mkdtempSync(join(tmpdir(), 'gbrain-install-test-'));
   process.env.HOME = tmp;
+  // Bun caches os.homedir(): changing HOME after imports does not isolate
+  // gbrainPath. Always pin GBRAIN_HOME before any wrapper/env-file writes.
+  process.env.GBRAIN_HOME = tmp;
+  expect(gbrainPath()).toBe(join(tmp, '.gbrain'));
   // Start each test with a clean slate for ephemeral env vars.
-  delete process.env.GBRAIN_HOME;
   delete process.env.RENDER;
   delete process.env.RAILWAY_ENVIRONMENT;
   delete process.env.FLY_APP_NAME;
