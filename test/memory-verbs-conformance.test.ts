@@ -76,6 +76,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  // Clear fake provider config as well as transports between cases in this file.
+  resetGateway();
   __setChatTransportForTests(null);
   __setEmbedTransportForTests(null);
 });
